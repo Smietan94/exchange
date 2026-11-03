@@ -19,6 +19,7 @@ use App\Service\TransferService;
 use App\Service\WalletService;
 use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
 use Throwable;
@@ -177,6 +178,36 @@ class WalletControllerTest extends TestCase
         self::assertSame(201, $response->getStatusCode());
     }
 
+    public function testTransferAcceptsNumericJsonAmount(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $transaction = new Transaction(
+            id: 42,
+            fromWalletId: 1,
+            toWalletId: 2,
+            fromAmount: '100.5',
+            toAmount: '25.0000',
+            fromCurrency: Currency::PLN,
+            toCurrency: Currency::EUR,
+            spread: '0.1000',
+            exchangeRate: '0.250000',
+            status: TransactionStatus::PENDING,
+            requiresAntiFraudCheck: false,
+            antiFraudCheckedAt: null,
+            createdAt: new DateTimeImmutable(),
+        );
+        $this->transferService->expects(self::once())->method('transfer')
+            ->with(1, 1, 2, '100.5')->willReturn($transaction);
+
+        $request = new Request(content: json_encode([
+            'fromWalletId' => 1,
+            'toWalletId' => 2,
+            'amount' => 100.5,
+        ], JSON_THROW_ON_ERROR));
+
+        self::assertSame(201, $this->controller->transfer($request, $user)->getStatusCode());
+    }
+
     /**
      * @throws Throwable
      */
@@ -243,6 +274,57 @@ class WalletControllerTest extends TestCase
 
         $data = json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
         self::assertSame('Amount must be a positive number.', $data['error']);
+    }
+
+    #[DataProvider('unsupportedTransferAmountsProvider')]
+    public function testTransferReturnsBadRequestForUnsupportedAmountFormats(mixed $amount): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->transferService->expects(self::never())->method('transfer');
+
+        $request = new Request(content: json_encode([
+            'fromWalletId' => 1,
+            'toWalletId' => 2,
+            'amount' => $amount,
+        ], JSON_THROW_ON_ERROR));
+
+        self::assertSame(400, $this->controller->transfer($request, $user)->getStatusCode());
+    }
+
+    public static function unsupportedTransferAmountsProvider(): array
+    {
+        return [
+            'zero' => ['0'],
+            'non numeric' => ['abc'],
+            'NaN' => ['NaN'],
+            'infinity' => ['INF'],
+            'scientific notation string' => ['1e3'],
+            'too many decimal places' => ['1.00000'],
+            'outside database range' => ['100000000000.0000'],
+            'array' => [['100.00']],
+            'boolean' => [true],
+        ];
+    }
+
+    public function testTransferReturnsBadRequestWhenServiceRejectsTheTransfer(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->transferService->expects(self::once())->method('transfer')
+            ->willThrowException(new \InvalidArgumentException('Insufficient wallet balance.'));
+
+        $request = new Request(content: json_encode([
+            'fromWalletId' => 1,
+            'toWalletId' => 2,
+            'amount' => '100.00',
+        ], JSON_THROW_ON_ERROR));
+
+        $response = $this->controller->transfer($request, $user);
+
+        self::assertSame(400, $response->getStatusCode());
+        self::assertSame(
+            'Insufficient wallet balance.',
+            json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR)['error'],
+        );
     }
 
     /**

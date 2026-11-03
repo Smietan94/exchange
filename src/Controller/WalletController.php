@@ -15,6 +15,7 @@ use App\Repository\WalletRepositoryInterface;
 use App\Service\DepositService;
 use App\Service\TransferService;
 use App\Service\WalletService;
+use InvalidArgumentException;
 use JsonException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -84,7 +85,8 @@ final class WalletController extends AbstractController
             }
         }
 
-        if (!is_numeric($data['amount']) || (float) $data['amount'] <= 0) {
+        $amount = TransferService::normalizeAmount($data['amount']);
+        if (null === $amount) {
             return new JsonResponse(['error' => 'Amount must be a positive number.'], Response::HTTP_BAD_REQUEST);
         }
 
@@ -93,10 +95,12 @@ final class WalletController extends AbstractController
                 $user->getIdNotNull(),
                 (int) $data['fromWalletId'],
                 (int) $data['toWalletId'],
-                (string) $data['amount'],
+                $amount,
             );
         } catch (WalletNotFoundException $e) {
             return new JsonResponse(['error' => $e->getMessage()], Response::HTTP_NOT_FOUND);
+        } catch (InvalidArgumentException $e) {
+            return new JsonResponse(['error' => $e->getMessage()], Response::HTTP_BAD_REQUEST);
         }
 
         return new JsonResponse(new TransactionResponse($transaction), Response::HTTP_CREATED);
