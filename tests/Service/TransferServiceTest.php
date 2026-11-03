@@ -15,6 +15,7 @@ use App\Service\ExchangeRateService;
 use App\Service\SpreadService;
 use App\Service\TransferService;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use InvalidArgumentException;
 
@@ -128,26 +129,84 @@ class TransferServiceTest extends TestCase
 
     public function testExactlyFifteenThousandEuroDoesNotRequireFraudReview(): void
     {
-        self::assertFalse($this->transferAtEuroAmount('15000.00')->requiresAntiFraudCheck());
+        $transaction = $this->transferUsingActualRates(Currency::EUR, Currency::USD, '15000.0000');
+
+        self::assertFalse($transaction->requiresAntiFraudCheck());
+        self::assertSame(TransactionStatus::PENDING, $transaction->getStatus());
     }
 
     public function testAmountAboveFifteenThousandEuroRequiresFraudReview(): void
     {
-        self::assertTrue($this->transferAtEuroAmount('15000.01')->requiresAntiFraudCheck());
+        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.5001');
+
+        self::assertTrue($transaction->requiresAntiFraudCheck());
+        self::assertSame(TransactionStatus::FRAUD_REVIEW, $transaction->getStatus());
+        self::assertLessThan(15_000.0, (float) $transaction->getToAmount());
     }
 
-    private function transferAtEuroAmount(string $amount): Transaction
+    public function testAmountBelowFifteenThousandEuroDoesNotRequireFraudReview(): void
     {
-        $from = Wallet::create(1, Currency::EUR);
-        $from->setBalance(20000.0);
-        $to = Wallet::create(1, Currency::USD);
+        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.4999');
+
+        self::assertFalse($transaction->requiresAntiFraudCheck());
+        self::assertSame(TransactionStatus::PENDING, $transaction->getStatus());
+    }
+
+    public function testFraudThresholdConvertsUsdSourceToEurRegardlessOfTargetCurrency(): void
+    {
+        $transaction = $this->transferUsingActualRates(Currency::USD, Currency::GBP, '17440.00');
+
+        self::assertTrue($transaction->requiresAntiFraudCheck());
+        self::assertSame(TransactionStatus::FRAUD_REVIEW, $transaction->getStatus());
+        self::assertLessThan(15_000.0, (float) $transaction->getToAmount());
+    }
+
+    #[DataProvider('invalidAmountsProvider')]
+    public function testTransferRejectsInvalidOrUnsupportedAmounts(string $amount): void
+    {
+        $this->walletRepository->expects(self::never())->method('findById');
+        $this->walletRepository->expects(self::never())->method('reserveBalance');
+        $this->transactionRepository->expects(self::never())->method('save');
+        $this->expectException(InvalidArgumentException::class);
+        $this->transferService->transfer(1, 1, 2, $amount);
+    }
+
+    public static function invalidAmountsProvider(): array
+    {
+        return [
+            'zero' => ['0'],
+            'negative' => ['-1.00'],
+            'non numeric' => ['not-a-number'],
+            'NaN text' => ['NAN'],
+            'infinite text' => ['INF'],
+            'scientific notation' => ['1e3'],
+            'too many decimal places' => ['1.00000'],
+            'beyond DECIMAL(15,4) range' => ['100000000000.0000'],
+        ];
+    }
+
+    public function testAmountNormalizerRejectsNonFiniteAndNonScalarValues(): void
+    {
+        foreach ([INF, -INF, NAN, [], true, null] as $amount) {
+            self::assertNull(TransferService::normalizeAmount($amount));
+        }
+    }
+
+    private function transferUsingActualRates(Currency $fromCurrency, Currency $toCurrency, string $amount): Transaction
+    {
+        $from = Wallet::create(1, $fromCurrency);
+        $from->setBalance(200_000_000.0);
+        $to = Wallet::create(1, $toCurrency);
         $this->walletRepository->method('findById')->willReturnMap([[1, $from], [2, $to]]);
         $this->walletRepository->method('reserveBalance')->willReturn(true);
-        $this->exchangeRateService->method('getExchangeRateBetween')->willReturn(1.0);
-        $this->spreadService->method('calculateSpread')->willReturn('0.00');
-        $this->transactionRepository->method('save');
+        $service = new TransferService(
+            $this->walletRepository,
+            $this->transactionRepository,
+            new ExchangeRateService(),
+            new SpreadService(),
+        );
 
-        return $this->transferService->transfer(1, 1, 2, $amount);
+        return $service->transfer(1, 1, 2, $amount);
     }
 
     public function testTransferThrowsWhenFromWalletNotFound(): void
