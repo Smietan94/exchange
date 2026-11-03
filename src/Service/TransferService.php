@@ -20,6 +20,7 @@ readonly class TransferService
         private TransactionRepositoryInterface $transactionRepository,
         private ExchangeRateService $exchangeRateService,
         private SpreadService $spreadService,
+        private TransactionProcessorService $transactionProcessorService,
     ) {
     }
 
@@ -81,6 +82,10 @@ readonly class TransferService
                 throw new InvalidArgumentException('Insufficient wallet balance.');
             }
             $this->transactionRepository->save($transaction);
+
+            if (!$transaction->requiresAntiFraudCheck()) {
+                $this->transactionProcessorService->complete($transaction);
+            }
         });
 
         return $transaction;
