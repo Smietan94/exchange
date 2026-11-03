@@ -60,7 +60,7 @@ final class ProcessTransactionsCommand extends Command
             $approved = $io->confirm('Approve this transaction?');
 
             if ($approved) {
-                $this->transactionProcessorService->complete($transaction);
+                $this->transactionProcessorService->approveFraudReview($transaction);
 
                 if (TransactionStatus::COMPLETED === $transaction->getStatus()) {
                     $io->success(sprintf('Transaction #%d approved and completed.', $transaction->getId()));
@@ -68,7 +68,7 @@ final class ProcessTransactionsCommand extends Command
                     $io->warning(sprintf('Transaction #%d rejected (wallet not found).', $transaction->getId()));
                 }
             } else {
-                $this->transactionProcessorService->reject($transaction);
+                $this->transactionProcessorService->rejectFraudReview($transaction);
                 $io->warning(sprintf('Transaction #%d rejected.', $transaction->getId()));
             }
         }
