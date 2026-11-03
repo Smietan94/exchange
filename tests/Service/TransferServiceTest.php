@@ -9,10 +9,12 @@ use App\Entity\Wallet;
 use App\Enum\Currency;
 use App\Enum\TransactionStatus;
 use App\Exception\WalletNotFoundException;
+use App\Repository\CompanyWalletRepositoryInterface;
 use App\Repository\TransactionRepositoryInterface;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\ExchangeRateService;
 use App\Service\SpreadService;
+use App\Service\TransactionProcessorService;
 use App\Service\TransferService;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -26,7 +28,9 @@ class TransferServiceTest extends TestCase
     private TransactionRepositoryInterface $transactionRepository;
     private ExchangeRateService $exchangeRateService;
     private SpreadService $spreadService;
+    private CompanyWalletRepositoryInterface $companyWalletRepository;
     private TransferService $transferService;
+    private array $databaseState = [];
 
     protected function setUp(): void
     {
@@ -34,16 +38,31 @@ class TransferServiceTest extends TestCase
         $this->transactionRepository = $this->createMock(TransactionRepositoryInterface::class);
         $this->exchangeRateService = $this->createMock(ExchangeRateService::class);
         $this->spreadService = $this->createMock(SpreadService::class);
+        $this->companyWalletRepository = $this->createMock(CompanyWalletRepositoryInterface::class);
 
         $this->transferService = new TransferService(
             $this->walletRepository,
             $this->transactionRepository,
             $this->exchangeRateService,
             $this->spreadService,
+            new TransactionProcessorService(
+                $this->walletRepository,
+                $this->transactionRepository,
+                $this->companyWalletRepository,
+            ),
         );
         $this->transactionRepository->method('transactional')->willReturnCallback(
-            static fn (callable $operation): mixed => $operation(),
+            function (callable $operation): mixed {
+                $snapshot = $this->databaseState;
+                try {
+                    return $operation();
+                } catch (\Throwable $exception) {
+                    $this->databaseState = $snapshot;
+                    throw $exception;
+                }
+            },
         );
+        $this->transactionRepository->method('transition')->willReturn(true);
     }
 
     public function testTransferSuccessfully(): void
@@ -67,7 +86,7 @@ class TransferServiceTest extends TestCase
             ->willReturn($userId);
 
         $this->walletRepository
-            ->expects(self::exactly(2))
+            ->expects(self::exactly(4))
             ->method('findById')
             ->willReturnMap([
                 [1, $fromWallet],
@@ -88,18 +107,21 @@ class TransferServiceTest extends TestCase
 
         $this->walletRepository->expects(self::once())
             ->method('reserveBalance')->with(1, '1000.00')->willReturn(true);
-        $this->walletRepository->expects(self::never())->method('addToBalance');
+        $this->walletRepository->expects(self::once())->method('addToBalance')->with(2, '249.0000');
+        $this->companyWalletRepository->expects(self::once())->method('addToBalance')->with(Currency::EUR, '1.00');
 
         $this->transactionRepository
             ->expects(self::once())
             ->method('save')
-            ->with($this->isInstanceOf(Transaction::class));
+            ->with($this->callback(static fn (Transaction $transaction): bool => TransactionStatus::PENDING === $transaction->getStatus()));
+        $this->transactionRepository->expects(self::once())
+            ->method('transition')
+            ->with($this->isInstanceOf(Transaction::class), TransactionStatus::PENDING, TransactionStatus::COMPLETED, null)
+            ->willReturn(true);
 
         $transaction = $this->transferService->transfer($userId, 1, 2, '1000.00');
 
-        self::assertSame(5000.0, $fromWallet->getBalance());
-        self::assertSame(100.0, $toWallet->getBalance());
-        self::assertSame(TransactionStatus::PENDING, $transaction->getStatus());
+        self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
         self::assertFalse($transaction->requiresAntiFraudCheck());
         self::assertSame('1000.00', $transaction->getFromAmount());
         self::assertSame('249.0000', $transaction->getToAmount());
@@ -127,12 +149,74 @@ class TransferServiceTest extends TestCase
         $this->transferService->transfer(1, 1, 2, '11.00');
     }
 
+    public function testOrdinaryTransferRollsBackReservationAndRecordWhenImmediateProcessingFails(): void
+    {
+        $from = Wallet::create(1, Currency::PLN);
+        $from->setBalance(500.0);
+        $to = Wallet::create(1, Currency::EUR);
+        $this->walletRepository->method('findById')->willReturnMap([[1, $from], [2, $to]]);
+        $this->exchangeRateService->method('getExchangeRateBetween')->willReturn(0.25);
+        $this->spreadService->method('calculateSpread')->willReturn('1.00');
+
+        $this->databaseState = [
+            'sourceBalance' => 500.0,
+            'destinationBalance' => 100.0,
+            'companyBalance' => 2.0,
+            'transactionSaved' => false,
+            'status' => TransactionStatus::PENDING,
+        ];
+        $this->walletRepository->expects(self::once())->method('reserveBalance')->willReturnCallback(
+            function (int $walletId, string $amount): bool {
+                $this->databaseState['sourceBalance'] -= (float) $amount;
+
+                return true;
+            },
+        );
+        $this->transactionRepository->expects(self::once())->method('save')->willReturnCallback(
+            function (): void {
+                $this->databaseState['transactionSaved'] = true;
+            },
+        );
+        $this->transactionRepository->method('transition')->willReturnCallback(
+            function (Transaction $transaction, TransactionStatus $expected, TransactionStatus $next): bool {
+                if ($this->databaseState['status'] !== $expected) {
+                    return false;
+                }
+                $this->databaseState['status'] = $next;
+
+                return true;
+            },
+        );
+        $this->walletRepository->method('addToBalance')->willReturnCallback(
+            function (int $walletId, string $amount): void {
+                $this->databaseState['destinationBalance'] += (float) $amount;
+            },
+        );
+        $this->companyWalletRepository->expects(self::once())->method('addToBalance')
+            ->willThrowException(new \RuntimeException('Company wallet write failed.'));
+
+        try {
+            $this->transferService->transfer(1, 1, 2, '100.00');
+            self::fail('Expected immediate processing to fail.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('Company wallet write failed.', $exception->getMessage());
+        }
+
+        self::assertSame([
+            'sourceBalance' => 500.0,
+            'destinationBalance' => 100.0,
+            'companyBalance' => 2.0,
+            'transactionSaved' => false,
+            'status' => TransactionStatus::PENDING,
+        ], $this->databaseState);
+    }
+
     public function testExactlyFifteenThousandEuroDoesNotRequireFraudReview(): void
     {
         $transaction = $this->transferUsingActualRates(Currency::EUR, Currency::USD, '15000.0000');
 
         self::assertFalse($transaction->requiresAntiFraudCheck());
-        self::assertSame(TransactionStatus::PENDING, $transaction->getStatus());
+        self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
     }
 
     public function testAmountAboveFifteenThousandEuroRequiresFraudReview(): void
@@ -149,7 +233,7 @@ class TransferServiceTest extends TestCase
         $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.4999');
 
         self::assertFalse($transaction->requiresAntiFraudCheck());
-        self::assertSame(TransactionStatus::PENDING, $transaction->getStatus());
+        self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
     }
 
     public function testFraudThresholdConvertsUsdSourceToEurRegardlessOfTargetCurrency(): void
@@ -204,6 +288,11 @@ class TransferServiceTest extends TestCase
             $this->transactionRepository,
             new ExchangeRateService(),
             new SpreadService(),
+            new TransactionProcessorService(
+                $this->walletRepository,
+                $this->transactionRepository,
+                $this->companyWalletRepository,
+            ),
         );
 
         return $service->transfer(1, 1, 2, $amount);
