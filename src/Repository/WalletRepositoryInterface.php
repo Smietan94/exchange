@@ -6,6 +6,7 @@ namespace App\Repository;
 
 use App\Entity\Wallet;
 use App\Enum\Currency;
+use Brick\Money\Money;
 
 interface WalletRepositoryInterface
 {
@@ -18,7 +19,7 @@ interface WalletRepositoryInterface
 
     public function save(Wallet $wallet): void;
 
-    public function reserveBalance(int $walletId, string $amount): bool;
+    public function reserveBalance(int $walletId, Money $amount): bool;
 
-    public function addToBalance(int $walletId, string $amount): void;
+    public function addToBalance(int $walletId, Money $amount): void;
 }

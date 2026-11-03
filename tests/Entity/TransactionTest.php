@@ -7,6 +7,7 @@ namespace App\Tests\Entity;
 use App\Entity\Transaction;
 use App\Enum\Currency;
 use App\Enum\TransactionStatus;
+use Brick\Money\Money;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 
@@ -19,11 +20,11 @@ class TransactionTest extends TestCase
         $this->assertNull($transaction->getId());
         $this->assertSame(1, $transaction->getFromWalletId());
         $this->assertSame(2, $transaction->getToWalletId());
-        $this->assertSame('100.00', $transaction->getFromAmount());
-        $this->assertSame('90.00', $transaction->getToAmount());
+        $this->assertTrue(Money::of('100.00', 'PLN')->isEqualTo($transaction->getFromAmount()));
+        $this->assertTrue(Money::of('90.00', 'EUR')->isEqualTo($transaction->getToAmount()));
         $this->assertSame(Currency::PLN, $transaction->getFromCurrency());
         $this->assertSame(Currency::EUR, $transaction->getToCurrency());
-        $this->assertSame('0.02', $transaction->getSpread());
+        $this->assertTrue(Money::of('0.02', 'EUR')->isEqualTo($transaction->getSpread()));
         $this->assertSame('0.22', $transaction->getExchangeRate());
         $this->assertSame(TransactionStatus::PENDING, $transaction->getStatus());
         $this->assertFalse($transaction->requiresAntiFraudCheck());
@@ -75,11 +76,11 @@ class TransactionTest extends TestCase
         return Transaction::create(
             fromWalletId: 1,
             toWalletId: 2,
-            fromAmount: '100.00',
-            toAmount: '90.00',
+            fromAmount: Money::of('100.00', 'PLN'),
+            toAmount: Money::of('90.00', 'EUR'),
             fromCurrency: Currency::PLN,
             toCurrency: Currency::EUR,
-            spread: '0.02',
+            spread: Money::of('0.02', 'EUR'),
             exchangeRate: '0.22',
             requiresAntiFraudCheck: $requiresAntiFraudCheck,
         );

@@ -6,6 +6,8 @@ namespace App\Repository;
 
 use App\Entity\Wallet;
 use App\Enum\Currency;
+use App\Service\MoneyAmount;
+use Brick\Money\Money;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
@@ -97,20 +99,20 @@ readonly class WalletRepository implements WalletRepositoryInterface
         }
     }
 
-    public function reserveBalance(int $walletId, string $amount): bool
+    public function reserveBalance(int $walletId, Money $amount): bool
     {
         return 1 === $this->connection->executeStatement(
-            'UPDATE wallets SET balance = balance - :amount WHERE id = :id AND balance >= :amount',
-            ['amount' => $amount, 'id' => $walletId],
+            'UPDATE wallets SET balance = balance - :amount WHERE id = :id AND currency = :currency AND balance >= :amount',
+            ['amount' => MoneyAmount::format($amount), 'id' => $walletId, 'currency' => $amount->getCurrency()->getCurrencyCode()],
         );
     }
 
-    public function addToBalance(int $walletId, string $amount): void
+    public function addToBalance(int $walletId, Money $amount): void
     {
         $now = (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $this->connection->executeStatement(
-            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id',
-            ['amount' => $amount, 'now' => $now, 'id' => $walletId],
+            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id AND currency = :currency',
+            ['amount' => MoneyAmount::format($amount), 'now' => $now, 'id' => $walletId, 'currency' => $amount->getCurrency()->getCurrencyCode()],
         );
     }
 
@@ -120,7 +122,7 @@ readonly class WalletRepository implements WalletRepositoryInterface
             id: (int) $row['id'],
             userId: (int) $row['user_id'],
             currency: Currency::from($row['currency']),
-            balance: (float) $row['balance'],
+            balance: MoneyAmount::fromDatabase((string) $row['balance'], Currency::from($row['currency'])),
             isBlocked: (bool) $row['is_blocked'],
             lastActivityAt: null !== $row['last_activity_at'] ? new DateTimeImmutable($row['last_activity_at']) : null,
             createdAt: new DateTimeImmutable($row['created_at']),
@@ -150,7 +152,7 @@ readonly class WalletRepository implements WalletRepositoryInterface
             [
                 'user_id' => $wallet->getUserId(),
                 'currency' => $wallet->getCurrency()->value,
-                'balance' => $wallet->getBalance(),
+                'balance' => MoneyAmount::format($wallet->getBalance()),
                 'is_blocked' => (int) $wallet->isBlocked(),
                 'last_activity_at' => $wallet->getLastActivityAt()?->setTimezone(timezone: new DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
                 'created_at' => $wallet->getCreatedAt()
@@ -183,7 +185,7 @@ readonly class WalletRepository implements WalletRepositoryInterface
         $this->connection->executeQuery(
             $qb->getSQL(),
             [
-                'balance' => $wallet->getBalance(),
+                'balance' => MoneyAmount::format($wallet->getBalance()),
                 'is_blocked' => (int) $wallet->isBlocked(),
                 'last_activity_at' => $wallet->getLastActivityAt()?->setTimezone(timezone: new DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
                 'id' => $wallet->getId(),

@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Entity;
 
 use App\Enum\Currency;
+use Brick\Money\Money;
 use DateTimeImmutable;
+use InvalidArgumentException;
 
 class Wallet
 {
@@ -13,11 +15,14 @@ class Wallet
         private ?int $id,
         private readonly int $userId,
         private readonly Currency $currency,
-        private float $balance,
+        private Money $balance,
         private bool $isBlocked,
         private ?DateTimeImmutable $lastActivityAt,
         private readonly DateTimeImmutable $createdAt,
     ) {
+        if (!$balance->getCurrency()->isEqualTo($currency->value)) {
+            throw new InvalidArgumentException('Wallet balance currency must match wallet currency.');
+        }
     }
 
     public static function create(int $userId, Currency $currency): self
@@ -26,7 +31,7 @@ class Wallet
             id: null,
             userId: $userId,
             currency: $currency,
-            balance: 0.0,
+            balance: Money::zero($currency->value),
             isBlocked: false,
             lastActivityAt: null,
             createdAt: new DateTimeImmutable(),
@@ -48,7 +53,7 @@ class Wallet
         return $this->currency;
     }
 
-    public function getBalance(): float
+    public function getBalance(): Money
     {
         return $this->balance;
     }
@@ -68,8 +73,12 @@ class Wallet
         return $this->createdAt;
     }
 
-    public function setBalance(float $balance): void
+    public function setBalance(Money $balance): void
     {
+        if (!$balance->getCurrency()->isEqualTo($this->currency->value)) {
+            throw new InvalidArgumentException('Wallet balance currency must match wallet currency.');
+        }
+
         $this->balance = $balance;
     }
 

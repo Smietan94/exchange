@@ -7,6 +7,7 @@ namespace App\Repository;
 use App\Entity\Transaction;
 use App\Enum\Currency;
 use App\Enum\TransactionStatus;
+use App\Service\MoneyAmount;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
@@ -122,15 +123,18 @@ readonly class TransactionRepository implements TransactionRepositoryInterface
 
     private function buildEntity(array $row): Transaction
     {
+        $fromCurrency = Currency::from($row['from_currency']);
+        $toCurrency = Currency::from($row['to_currency']);
+
         return new Transaction(
             id: (int) $row['id'],
             fromWalletId: (int) $row['from_wallet_id'],
             toWalletId: (int) $row['to_wallet_id'],
-            fromAmount: (string) $row['from_amount'],
-            toAmount: (string) $row['to_amount'],
-            fromCurrency: Currency::from($row['from_currency']),
-            toCurrency: Currency::from($row['to_currency']),
-            spread: (string) $row['spread'],
+            fromAmount: MoneyAmount::fromDatabase((string) $row['from_amount'], $fromCurrency),
+            toAmount: MoneyAmount::fromDatabase((string) $row['to_amount'], $toCurrency),
+            fromCurrency: $fromCurrency,
+            toCurrency: $toCurrency,
+            spread: MoneyAmount::fromDatabase((string) $row['spread'], $toCurrency),
             exchangeRate: (string) $row['exchange_rate'],
             status: TransactionStatus::from($row['status']),
             requiresAntiFraudCheck: (bool) $row['requires_anti_fraud_check'],
@@ -170,11 +174,11 @@ readonly class TransactionRepository implements TransactionRepositoryInterface
             [
                 'from_wallet_id' => $transaction->getFromWalletId(),
                 'to_wallet_id' => $transaction->getToWalletId(),
-                'from_amount' => $transaction->getFromAmount(),
-                'to_amount' => $transaction->getToAmount(),
+                'from_amount' => MoneyAmount::format($transaction->getFromAmount()),
+                'to_amount' => MoneyAmount::format($transaction->getToAmount()),
                 'from_currency' => $transaction->getFromCurrency()->value,
                 'to_currency' => $transaction->getToCurrency()->value,
-                'spread' => $transaction->getSpread(),
+                'spread' => MoneyAmount::format($transaction->getSpread()),
                 'exchange_rate' => $transaction->getExchangeRate(),
                 'status' => $transaction->getStatus()->value,
                 'requires_anti_fraud_check' => (int) $transaction->requiresAntiFraudCheck(),

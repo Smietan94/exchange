@@ -9,6 +9,7 @@ use App\Enum\Currency;
 use App\Exception\WalletAlreadyExistsException;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\WalletService;
+use Brick\Money\Money;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 
@@ -44,7 +45,7 @@ class WalletServiceTest extends TestCase
 
         self::assertSame($userId, $wallet->getUserId());
         self::assertSame($currency, $wallet->getCurrency());
-        self::assertSame(0.0, $wallet->getBalance());
+        self::assertTrue(Money::zero('EUR')->isEqualTo($wallet->getBalance()));
         self::assertFalse($wallet->isBlocked());
     }
 
