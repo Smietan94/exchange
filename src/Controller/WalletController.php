@@ -13,9 +13,11 @@ use App\Exception\WalletBlockedException;
 use App\Exception\WalletNotFoundException;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\DepositService;
+use App\Service\MoneyAmount;
 use App\Service\TransferService;
 use App\Service\WalletService;
 use InvalidArgumentException;
+use Brick\Math\BigDecimal;
 use JsonException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -118,11 +120,12 @@ final class WalletController extends AbstractController
             return new JsonResponse(['error' => 'Missing required field: amount.'], Response::HTTP_BAD_REQUEST);
         }
 
-        if (!is_numeric($data['amount']) || (float) $data['amount'] <= 0) {
+        $amount = MoneyAmount::normalizeInput($data['amount']);
+        if (null === $amount) {
             return new JsonResponse(['error' => 'Amount must be a positive number.'], Response::HTTP_BAD_REQUEST);
         }
 
-        if ((float) $data['amount'] > DepositService::MAX_AMOUNT) {
+        if (BigDecimal::of($amount)->isGreaterThan(DepositService::MAX_AMOUNT)) {
             return new JsonResponse(['error' => sprintf('Amount cannot exceed %s.', DepositService::MAX_AMOUNT)], Response::HTTP_BAD_REQUEST);
         }
 
@@ -130,12 +133,14 @@ final class WalletController extends AbstractController
             $wallet = $this->depositService->deposit(
                 $user->getIdNotNull(),
                 $id,
-                (string) $data['amount'],
+                $amount,
             );
         } catch (WalletNotFoundException $e) {
             return new JsonResponse(['error' => $e->getMessage()], Response::HTTP_NOT_FOUND);
         } catch (WalletBlockedException $e) {
             return new JsonResponse(['error' => $e->getMessage()], Response::HTTP_UNPROCESSABLE_ENTITY);
+        } catch (InvalidArgumentException $e) {
+            return new JsonResponse(['error' => $e->getMessage()], Response::HTTP_BAD_REQUEST);
         }
 
         return new JsonResponse(new WalletResponse($wallet));

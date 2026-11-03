@@ -7,6 +7,7 @@ namespace App\Command;
 use App\Enum\TransactionStatus;
 use App\Repository\TransactionRepositoryInterface;
 use App\Service\TransactionProcessorService;
+use App\Service\MoneyAmount;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -51,9 +52,9 @@ final class ProcessTransactionsCommand extends Command
             $io->definitionList(
                 ['From wallet' => $transaction->getFromWalletId()],
                 ['To wallet' => $transaction->getToWalletId()],
-                ['Amount' => sprintf('%s %s → %s %s', $transaction->getFromAmount(), $transaction->getFromCurrency()->value, $transaction->getToAmount(), $transaction->getToCurrency()->value)],
+                ['Amount' => sprintf('%s %s → %s %s', MoneyAmount::format($transaction->getFromAmount()), $transaction->getFromCurrency()->value, MoneyAmount::format($transaction->getToAmount()), $transaction->getToCurrency()->value)],
                 ['Exchange rate' => $transaction->getExchangeRate()],
-                ['Spread' => $transaction->getSpread()],
+                ['Spread' => MoneyAmount::format($transaction->getSpread())],
                 ['Created at' => $transaction->getCreatedAt()->format('Y-m-d H:i:s')],
             );
 

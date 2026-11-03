@@ -17,6 +17,7 @@ use App\Repository\WalletRepositoryInterface;
 use App\Service\DepositService;
 use App\Service\TransferService;
 use App\Service\WalletService;
+use Brick\Money\Money;
 use DateTimeImmutable;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -150,11 +151,11 @@ class WalletControllerTest extends TestCase
             id: 42,
             fromWalletId: 1,
             toWalletId: 2,
-            fromAmount: '100.0000',
-            toAmount: '25.1234',
+            fromAmount: Money::of('100.00', 'PLN'),
+            toAmount: Money::of('25.12', 'EUR'),
             fromCurrency: Currency::PLN,
             toCurrency: Currency::EUR,
-            spread: '0.1260',
+            spread: Money::of('0.13', 'EUR'),
             exchangeRate: '0.250000',
             status: TransactionStatus::PENDING,
             requiresAntiFraudCheck: false,
@@ -185,11 +186,11 @@ class WalletControllerTest extends TestCase
             id: 42,
             fromWalletId: 1,
             toWalletId: 2,
-            fromAmount: '100.5',
-            toAmount: '25.0000',
+            fromAmount: Money::of('100.50', 'PLN'),
+            toAmount: Money::of('25.00', 'EUR'),
             fromCurrency: Currency::PLN,
             toCurrency: Currency::EUR,
-            spread: '0.1000',
+            spread: Money::of('0.10', 'EUR'),
             exchangeRate: '0.250000',
             status: TransactionStatus::PENDING,
             requiresAntiFraudCheck: false,

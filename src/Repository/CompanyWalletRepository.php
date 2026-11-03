@@ -6,6 +6,8 @@ namespace App\Repository;
 
 use App\Entity\CompanyWallet;
 use App\Enum\Currency;
+use App\Service\MoneyAmount;
+use Brick\Money\Money;
 use DateTimeImmutable;
 use DateTimeZone;
 use Doctrine\DBAL\Connection;
@@ -62,15 +64,19 @@ readonly class CompanyWalletRepository implements CompanyWalletRepositoryInterfa
     /**
      * @throws Exception
      */
-    public function addToBalance(Currency $currency, string $amount): void
+    public function addToBalance(Currency $currency, Money $amount): void
     {
+        if (!$amount->getCurrency()->isEqualTo($currency->value)) {
+            throw new \InvalidArgumentException('Company wallet amount currency must match wallet currency.');
+        }
+
         $now = new DateTimeImmutable()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
         $this->connection->executeStatement(
             'INSERT INTO company_wallets (currency, balance, created_at, updated_at) VALUES (:currency, :amount, :created_at, :updated_at) ON DUPLICATE KEY UPDATE balance = company_wallets.balance + :increment, updated_at = :updated_at_existing',
             [
                 'currency' => $currency->value,
-                'amount' => $amount,
-                'increment' => $amount,
+                'amount' => MoneyAmount::format($amount),
+                'increment' => MoneyAmount::format($amount),
                 'created_at' => $now,
                 'updated_at' => $now,
                 'updated_at_existing' => $now,
@@ -80,10 +86,12 @@ readonly class CompanyWalletRepository implements CompanyWalletRepositoryInterfa
 
     private function buildEntity(array $row): CompanyWallet
     {
+        $currency = Currency::from($row['currency']);
+
         return new CompanyWallet(
             id: (int) $row['id'],
-            currency: Currency::from($row['currency']),
-            balance: (float) $row['balance'],
+            currency: $currency,
+            balance: MoneyAmount::fromDatabase((string) $row['balance'], $currency),
             createdAt: new DateTimeImmutable($row['created_at']),
             updatedAt: new DateTimeImmutable($row['updated_at']),
         );

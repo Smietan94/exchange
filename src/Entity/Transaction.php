@@ -6,7 +6,9 @@ namespace App\Entity;
 
 use App\Enum\Currency;
 use App\Enum\TransactionStatus;
+use Brick\Money\Money;
 use DateTimeImmutable;
+use InvalidArgumentException;
 
 class Transaction
 {
@@ -14,27 +16,33 @@ class Transaction
         private ?int $id,
         private readonly int $fromWalletId,
         private readonly int $toWalletId,
-        private readonly string $fromAmount,
-        private readonly string $toAmount,
+        private readonly Money $fromAmount,
+        private readonly Money $toAmount,
         private readonly Currency $fromCurrency,
         private readonly Currency $toCurrency,
-        private readonly string $spread,
+        private readonly Money $spread,
         private readonly string $exchangeRate,
         private TransactionStatus $status,
         private readonly bool $requiresAntiFraudCheck,
         private ?DateTimeImmutable $antiFraudCheckedAt,
         private readonly DateTimeImmutable $createdAt,
     ) {
+        if (!$fromAmount->getCurrency()->isEqualTo($fromCurrency->value)) {
+            throw new InvalidArgumentException('Source amount currency must match source currency.');
+        }
+        if (!$toAmount->getCurrency()->isEqualTo($toCurrency->value) || !$spread->getCurrency()->isEqualTo($toCurrency->value)) {
+            throw new InvalidArgumentException('Destination amount and spread currencies must match destination currency.');
+        }
     }
 
     public static function create(
         int $fromWalletId,
         int $toWalletId,
-        string $fromAmount,
-        string $toAmount,
+        Money $fromAmount,
+        Money $toAmount,
         Currency $fromCurrency,
         Currency $toCurrency,
-        string $spread,
+        Money $spread,
         string $exchangeRate,
         bool $requiresAntiFraudCheck,
     ): self {
@@ -72,12 +80,12 @@ class Transaction
         return $this->toWalletId;
     }
 
-    public function getFromAmount(): string
+    public function getFromAmount(): Money
     {
         return $this->fromAmount;
     }
 
-    public function getToAmount(): string
+    public function getToAmount(): Money
     {
         return $this->toAmount;
     }
@@ -92,7 +100,7 @@ class Transaction
         return $this->toCurrency;
     }
 
-    public function getSpread(): string
+    public function getSpread(): Money
     {
         return $this->spread;
     }
