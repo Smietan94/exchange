@@ -8,6 +8,7 @@ use App\Entity\Transaction;
 use App\Entity\Wallet;
 use App\Enum\Currency;
 use App\Enum\TransactionStatus;
+use App\Repository\CompanyWalletRepositoryInterface;
 use App\Repository\TransactionRepositoryInterface;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\TransactionProcessorService;
@@ -19,151 +20,108 @@ class TransactionProcessorServiceTest extends TestCase
 {
     private WalletRepositoryInterface $walletRepository;
     private TransactionRepositoryInterface $transactionRepository;
-    private TransactionProcessorService $transactionProcessorService;
+    private CompanyWalletRepositoryInterface $companyWalletRepository;
+    private TransactionProcessorService $processor;
 
     protected function setUp(): void
     {
         $this->walletRepository = $this->createMock(WalletRepositoryInterface::class);
         $this->transactionRepository = $this->createMock(TransactionRepositoryInterface::class);
-
-        $this->transactionProcessorService = new TransactionProcessorService(
+        $this->companyWalletRepository = $this->createMock(CompanyWalletRepositoryInterface::class);
+        $this->transactionRepository->method('transactional')->willReturnCallback(
+            static fn (callable $operation): mixed => $operation(),
+        );
+        $this->processor = new TransactionProcessorService(
             $this->walletRepository,
             $this->transactionRepository,
+            $this->companyWalletRepository,
         );
     }
 
-    public function testCompleteUpdatesWalletBalancesAndSetsCompletedStatus(): void
+    public function testCompleteCreditsDestinationAndSpreadOnceAndDoesNotDeductSourceAgain(): void
     {
-        $fromWallet = Wallet::create(1, Currency::PLN);
-        $fromWallet->setBalance(500.0);
+        $source = Wallet::create(1, Currency::PLN);
+        $destination = Wallet::create(1, Currency::EUR);
+        $transaction = $this->makeTransaction(false);
+        $this->walletRepository->method('findById')->willReturnMap([[1, $source], [2, $destination]]);
+        $this->transactionRepository->expects(self::once())->method('transition')
+            ->with($transaction, TransactionStatus::COMPLETED)->willReturnCallback(
+                static function (Transaction $transaction, TransactionStatus $status): bool {
+                    $transaction->setStatus($status);
 
-        $toWallet = Wallet::create(1, Currency::EUR);
-        $toWallet->setBalance(100.0);
+                    return true;
+                },
+            );
+        $this->walletRepository->expects(self::once())->method('addToBalance')->with(2, '25.0000');
+        $this->companyWalletRepository->expects(self::once())->method('addToBalance')->with(Currency::EUR, '0.5000');
 
-        $transaction = $this->makeTransaction(requiresAntiFraudCheck: false);
+        $this->processor->complete($transaction);
 
-        $this->walletRepository
-            ->method('findById')
-            ->willReturnMap([
-                [1, $fromWallet],
-                [2, $toWallet],
-            ]);
-
-        $this->walletRepository
-            ->expects(self::exactly(2))
-            ->method('save')
-            ->with($this->isInstanceOf(Wallet::class));
-
-        $this->transactionRepository
-            ->expects(self::once())
-            ->method('save')
-            ->with($transaction);
-
-        $this->transactionProcessorService->complete($transaction);
-
-        self::assertSame(400.0, $fromWallet->getBalance());
-        self::assertSame(125.0, $toWallet->getBalance());
-        self::assertNotNull($fromWallet->getLastActivityAt());
-        self::assertNotNull($toWallet->getLastActivityAt());
         self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
-        self::assertNull($transaction->getAntiFraudCheckedAt());
     }
 
-    public function testCompleteSetsAntiFraudCheckedAtWhenRequired(): void
+    public function testRepeatedCompletionDoesNotCreditAnyBalanceOrSpreadAgain(): void
     {
-        $fromWallet = Wallet::create(1, Currency::PLN);
-        $fromWallet->setBalance(500.0);
+        $transaction = $this->makeTransaction(false);
+        $wallets = [Wallet::create(1, Currency::PLN), Wallet::create(1, Currency::EUR)];
+        $this->walletRepository->method('findById')->willReturnMap([[1, $wallets[0]], [2, $wallets[1]]]);
+        $processed = false;
+        $this->transactionRepository->expects(self::exactly(2))->method('transition')
+            ->willReturnCallback(static function (Transaction $transaction, TransactionStatus $status) use (&$processed): bool {
+                if ($processed) {
+                    return false;
+                }
+                $processed = true;
+                $transaction->setStatus($status);
 
-        $toWallet = Wallet::create(1, Currency::EUR);
+                return true;
+            });
+        $this->walletRepository->expects(self::once())->method('addToBalance')->with(2, '25.0000');
+        $this->companyWalletRepository->expects(self::once())->method('addToBalance')->with(Currency::EUR, '0.5000');
 
-        $transaction = $this->makeTransaction(requiresAntiFraudCheck: true);
+        $this->processor->complete($transaction);
+        $this->processor->complete($transaction);
+    }
 
-        $this->walletRepository
-            ->method('findById')
-            ->willReturnMap([
-                [1, $fromWallet],
-                [2, $toWallet],
-            ]);
+    public function testRejectReturnsReservedAmountWithoutCreditingDestinationOrCompany(): void
+    {
+        $transaction = $this->makeTransaction(true);
+        $this->transactionRepository->expects(self::once())->method('transition')
+            ->with($transaction, TransactionStatus::REJECTED)->willReturnCallback(
+                static function (Transaction $transaction, TransactionStatus $status): bool {
+                    $transaction->setStatus($status);
+                    $transaction->setAntiFraudCheckedAt(new \DateTimeImmutable());
 
-        $this->transactionProcessorService->complete($transaction);
+                    return true;
+                },
+            );
+        $this->walletRepository->expects(self::once())->method('addToBalance')->with(1, '100.0000');
+        $this->companyWalletRepository->expects(self::never())->method('addToBalance');
 
-        self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
+        $this->processor->reject($transaction);
+
+        self::assertSame(TransactionStatus::REJECTED, $transaction->getStatus());
         self::assertNotNull($transaction->getAntiFraudCheckedAt());
     }
 
-    public function testCompleteRejectsWhenFromWalletNotFound(): void
+    public function testRepeatedRejectionDoesNotReturnReservedAmountAgain(): void
     {
-        $transaction = $this->makeTransaction(requiresAntiFraudCheck: false);
+        $transaction = $this->makeTransaction(false);
+        $processed = false;
+        $this->transactionRepository->expects(self::exactly(2))->method('transition')
+            ->willReturnCallback(static function (Transaction $transaction, TransactionStatus $status) use (&$processed): bool {
+                if ($processed) {
+                    return false;
+                }
+                $processed = true;
+                $transaction->setStatus($status);
 
-        $this->walletRepository
-            ->method('findById')
-            ->willReturnMap([
-                [1, null],
-                [2, Wallet::create(1, Currency::EUR)],
-            ]);
+                return true;
+            });
+        $this->walletRepository->expects(self::once())->method('addToBalance')->with(1, '100.0000');
 
-        $this->walletRepository->expects(self::never())->method('save');
-
-        $this->transactionProcessorService->complete($transaction);
-
-        self::assertSame(TransactionStatus::REJECTED, $transaction->getStatus());
-    }
-
-    public function testCompleteRejectsWhenToWalletNotFound(): void
-    {
-        $fromWallet = Wallet::create(1, Currency::PLN);
-        $fromWallet->setBalance(500.0);
-
-        $transaction = $this->makeTransaction(requiresAntiFraudCheck: false);
-
-        $this->walletRepository
-            ->method('findById')
-            ->willReturnMap([
-                [1, $fromWallet],
-                [2, null],
-            ]);
-
-        $this->walletRepository->expects(self::never())->method('save');
-
-        $this->transactionProcessorService->complete($transaction);
-
-        self::assertSame(TransactionStatus::REJECTED, $transaction->getStatus());
-    }
-
-    public function testRejectSetsRejectedStatus(): void
-    {
-        $transaction = $this->makeTransaction(requiresAntiFraudCheck: false);
-
-        $wallet = $this->createStub(Wallet::class);
-
-        $this->transactionRepository
-            ->expects(self::once())
-            ->method('save')
-            ->with($transaction);
-        $this->walletRepository
-            ->expects($this->once())
-            ->method('findById')
-            ->with(1)
-            ->willReturn($wallet);
-        $this->walletRepository
-            ->expects($this->once())
-            ->method('save')
-            ->with($wallet);
-
-        $this->transactionProcessorService->reject($transaction);
-
-        self::assertSame(TransactionStatus::REJECTED, $transaction->getStatus());
-        self::assertNull($transaction->getAntiFraudCheckedAt());
-    }
-
-    public function testRejectSetsAntiFraudCheckedAtWhenRequired(): void
-    {
-        $transaction = $this->makeTransaction(requiresAntiFraudCheck: true);
-
-        $this->transactionProcessorService->reject($transaction);
-
-        self::assertSame(TransactionStatus::REJECTED, $transaction->getStatus());
-        self::assertNotNull($transaction->getAntiFraudCheckedAt());
+        $this->processor->reject($transaction);
+        $this->processor->reject($transaction);
     }
 
     private function makeTransaction(bool $requiresAntiFraudCheck): Transaction
