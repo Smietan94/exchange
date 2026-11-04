@@ -13,6 +13,8 @@ use InvalidArgumentException;
 
 readonly class TransferService
 {
+    private const float EUR_ANTI_FRAUD_THRESHOLD = 15_000.0;
+
     public function __construct(
         private WalletRepositoryInterface $walletRepository,
         private TransactionRepositoryInterface $transactionRepository,
@@ -30,9 +32,11 @@ readonly class TransferService
         if ($fromWalletId === $toWalletId) {
             throw new InvalidArgumentException('Source and destination wallets must be different.');
         }
-        if (!is_numeric($fromAmount) || !is_finite((float) $fromAmount) || (float) $fromAmount <= 0) {
+        $normalizedAmount = self::normalizeAmount($fromAmount);
+        if (null === $normalizedAmount) {
             throw new InvalidArgumentException('Transfer amount must be positive.');
         }
+        $fromAmount = $normalizedAmount;
 
         $fromWallet = $this->walletRepository->findById($fromWalletId);
         if (null === $fromWallet || $fromWallet->getUserId() !== $userId) {
@@ -52,7 +56,8 @@ readonly class TransferService
         $toCurrency = $toWallet->getCurrency();
 
         $exchangeRate = $this->exchangeRateService->getExchangeRateBetween($fromCurrency, $toCurrency);
-        $amountInEur = (float) $fromAmount * $this->exchangeRateService->getExchangeRateBetween($fromCurrency, Currency::EUR);
+        $amountInEur = (float) $fromAmount
+            * $this->exchangeRateService->getExchangeRateBetween($fromCurrency, Currency::EUR);
         $rawToAmount = (float) $fromAmount * $exchangeRate;
         $spread = $this->spreadService->calculateSpread($rawToAmount, $fromCurrency, $toCurrency);
         $toAmount = $rawToAmount - (float) $spread;
@@ -68,7 +73,7 @@ readonly class TransferService
             toCurrency: $toCurrency,
             spread: $spread,
             exchangeRate: number_format($exchangeRate, 6, '.', ''),
-            requiresAntiFraudCheck: $amountInEur > 15_000,
+            requiresAntiFraudCheck: $amountInEur > self::EUR_ANTI_FRAUD_THRESHOLD,
         );
 
         $this->transactionRepository->transactional(function () use ($fromWalletId, $fromAmount, $transaction): void {
@@ -79,5 +84,27 @@ readonly class TransferService
         });
 
         return $transaction;
+    }
+
+    public static function normalizeAmount(mixed $amount): ?string
+    {
+        if (!is_string($amount) && !is_int($amount) && !is_float($amount)) {
+            return null;
+        }
+        if (is_float($amount) && !is_finite($amount)) {
+            return null;
+        }
+
+        $amountString = (string) $amount;
+        if (1 !== preg_match('/\A\d{1,11}(?:\.\d{1,4})?\z/', $amountString)) {
+            return null;
+        }
+
+        $numericAmount = (float) $amountString;
+        if (!is_finite($numericAmount) || $numericAmount <= 0) {
+            return null;
+        }
+
+        return $amountString;
     }
 }
