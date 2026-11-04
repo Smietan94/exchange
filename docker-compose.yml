@@ -33,7 +33,7 @@ services:
 
   mariadb:
     container_name: mariadb
-    image: mariadb:11.4
+    image: mariadb:11.4.13
     restart: unless-stopped
     environment:
       MARIADB_ROOT_PASSWORD: root
