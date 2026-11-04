@@ -96,6 +96,7 @@ All endpoints require Bearer token authentication. Obtain a token with `app:crea
 |--------|-----------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `GET`  | `/api/wallets`              | List all wallets belonging to the authenticated user.                                                                                                                                  |
 | `POST` | `/api/wallets`              | Create a new wallet. Body: `{ "currency": "PLN" }`. Supported currencies: `PLN`, `EUR`, `USD`, `GBP`, `JPY`, `CHF`, `HUF`. Returns `409` if a wallet for that currency already exists. |
+| `DELETE` | `/api/wallets/{id}` | Archive an owned wallet if its balance is zero and it has no pending or fraud-review transactions. Returns `204`, `404` for a missing or other user's wallet, or `409` if the wallet cannot be archived. Transaction history is retained. |
 | `POST` | `/api/wallets/{id}/deposit` | Deposit funds into a wallet. Body: `{ "amount": "500.00" }`. Maximum single deposit: `10000`. Returns `422` if the wallet is blocked.                                                  |
 | `POST` | `/api/wallets/transfer`     | Transfer funds between two wallets of the authenticated user (currency exchange supported). Body: `{ "fromWalletId": 1, "toWalletId": 2, "amount": "100.00" }`.                        |
 

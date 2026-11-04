@@ -6,6 +6,9 @@ namespace App\Repository;
 
 use App\Entity\Wallet;
 use App\Enum\Currency;
+use App\Enum\TransactionStatus;
+use App\Exception\WalletDeletionConflictException;
+use App\Exception\WalletNotFoundException;
 use App\Service\MoneyAmount;
 use Brick\Money\Money;
 use DateTimeImmutable;
@@ -32,7 +35,8 @@ readonly class WalletRepository implements WalletRepositoryInterface
         $qb
             ->select('*')
             ->from(self::TABLE_NAME)
-            ->where('id = :id');
+            ->where('id = :id')
+            ->andWhere('deleted_at IS NULL');
 
         $row = $this->connection->fetchAssociative($qb->getSQL(), ['id' => $id]);
 
@@ -55,7 +59,8 @@ readonly class WalletRepository implements WalletRepositoryInterface
         $qb
             ->select('*')
             ->from(self::TABLE_NAME)
-            ->where('user_id = :user_id');
+            ->where('user_id = :user_id')
+            ->andWhere('deleted_at IS NULL');
 
         $rows = $this->connection->fetchAllAssociative($qb->getSQL(), ['user_id' => $userId]);
 
@@ -73,7 +78,8 @@ readonly class WalletRepository implements WalletRepositoryInterface
             ->select('*')
             ->from(self::TABLE_NAME)
             ->where('user_id = :user_id')
-            ->andWhere('currency = :currency');
+            ->andWhere('currency = :currency')
+            ->andWhere('deleted_at IS NULL');
 
         $row = $this->connection->fetchAssociative($qb->getSQL(), [
             'user_id' => $userId,
@@ -85,6 +91,54 @@ readonly class WalletRepository implements WalletRepositoryInterface
         }
 
         return $this->buildEntity($row);
+    }
+
+    public function lockActiveWallets(int $firstWalletId, int $secondWalletId): bool
+    {
+        $ids = $this->connection->fetchFirstColumn(
+            'SELECT id FROM wallets WHERE id IN (:first_id, :second_id) AND deleted_at IS NULL ORDER BY id FOR UPDATE',
+            ['first_id' => $firstWalletId, 'second_id' => $secondWalletId],
+        );
+
+        return 2 === count($ids);
+    }
+
+    public function archiveOwnedWallet(int $walletId, int $userId): void
+    {
+        $this->connection->transactional(function () use ($walletId, $userId): void {
+            $row = $this->connection->fetchAssociative(
+                'SELECT id, currency, balance FROM wallets WHERE id = :id AND user_id = :user_id AND deleted_at IS NULL FOR UPDATE',
+                ['id' => $walletId, 'user_id' => $userId],
+            );
+            if (!$row) {
+                throw new WalletNotFoundException($walletId);
+            }
+
+            $currency = Currency::from($row['currency']);
+            $balance = MoneyAmount::fromDatabase((string) $row['balance'], $currency);
+            $pendingCount = (int) $this->connection->fetchOne(
+                'SELECT COUNT(*) FROM transactions WHERE (from_wallet_id = :from_wallet_id OR to_wallet_id = :to_wallet_id) AND status IN (:pending, :fraud_review)',
+                [
+                    'from_wallet_id' => $walletId,
+                    'to_wallet_id' => $walletId,
+                    'pending' => TransactionStatus::PENDING->value,
+                    'fraud_review' => TransactionStatus::FRAUD_REVIEW->value,
+                ],
+            );
+
+            if (!$balance->isZero() || $pendingCount > 0) {
+                throw new WalletDeletionConflictException();
+            }
+
+            $now = (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+            $affected = $this->connection->executeStatement(
+                'UPDATE wallets SET deleted_at = :deleted_at WHERE id = :id AND user_id = :user_id AND deleted_at IS NULL AND balance = 0',
+                ['deleted_at' => $now, 'id' => $walletId, 'user_id' => $userId],
+            );
+            if (1 !== $affected) {
+                throw new WalletDeletionConflictException();
+            }
+        });
     }
 
     /**
@@ -104,7 +158,7 @@ readonly class WalletRepository implements WalletRepositoryInterface
         $now = (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 
         return 1 === $this->connection->executeStatement(
-            'UPDATE wallets SET balance = balance - :amount, last_activity_at = :now WHERE id = :id AND currency = :currency AND balance >= :amount',
+            'UPDATE wallets SET balance = balance - :amount, last_activity_at = :now WHERE id = :id AND currency = :currency AND balance >= :amount AND deleted_at IS NULL',
             ['amount' => MoneyAmount::format($amount), 'now' => $now, 'id' => $walletId, 'currency' => $amount->getCurrency()->getCurrencyCode()],
         );
     }
@@ -114,7 +168,7 @@ readonly class WalletRepository implements WalletRepositoryInterface
         $now = (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 
         return 1 === $this->connection->executeStatement(
-            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id AND currency = :currency AND is_blocked = 0',
+            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id AND currency = :currency AND is_blocked = 0 AND deleted_at IS NULL',
             ['amount' => MoneyAmount::format($amount), 'now' => $now, 'id' => $walletId, 'currency' => $amount->getCurrency()->getCurrencyCode()],
         );
     }
@@ -122,10 +176,14 @@ readonly class WalletRepository implements WalletRepositoryInterface
     public function addToBalance(int $walletId, Money $amount): void
     {
         $now = (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
-        $this->connection->executeStatement(
-            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id AND currency = :currency',
+        $affected = $this->connection->executeStatement(
+            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id AND currency = :currency AND deleted_at IS NULL',
             ['amount' => MoneyAmount::format($amount), 'now' => $now, 'id' => $walletId, 'currency' => $amount->getCurrency()->getCurrencyCode()],
         );
+
+        if (1 !== $affected) {
+            throw new \RuntimeException('Wallet balance could not be updated because the wallet is inactive or the currency does not match.');
+        }
     }
 
     private function buildEntity(array $row): Wallet

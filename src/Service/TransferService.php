@@ -82,7 +82,15 @@ readonly class TransferService
             requiresAntiFraudCheck: $this->exchangeRateService->exceedsEurThreshold($sourceAmount, self::EUR_ANTI_FRAUD_THRESHOLD),
         );
 
-        $this->transactionRepository->transactional(function () use ($fromWalletId, $sourceAmount, $transaction): void {
+        $this->transactionRepository->transactional(function () use ($fromWalletId, $toWalletId, $sourceAmount, $transaction): void {
+            if (!$this->walletRepository->lockActiveWallets($fromWalletId, $toWalletId)) {
+                if (null === $this->walletRepository->findById($fromWalletId)) {
+                    throw new WalletNotFoundException($fromWalletId);
+                }
+
+                throw new WalletNotFoundException($toWalletId);
+            }
+
             if (!$this->walletRepository->reserveBalance($fromWalletId, $sourceAmount)) {
                 throw new InvalidArgumentException('Insufficient wallet balance.');
             }
