@@ -26,7 +26,7 @@ class TransactionResponseTest extends TestCase
             fromCurrency: Currency::PLN,
             toCurrency: Currency::EUR,
             spread: Money::of('0.13', 'EUR'),
-            exchangeRate: '0.250000',
+            exchangeRate: '0.23591025973719597065',
             status: $status,
             requiresAntiFraudCheck: false,
             antiFraudCheckedAt: null,
@@ -46,7 +46,7 @@ class TransactionResponseTest extends TestCase
         self::assertSame('PLN', $data['fromCurrency']);
         self::assertSame('EUR', $data['toCurrency']);
         self::assertSame('0.13', $data['spread']);
-        self::assertSame('0.250000', $data['exchangeRate']);
+        self::assertSame('0.23591025973719597065', $data['exchangeRate']);
         self::assertSame('pending', $data['status']);
         self::assertSame(
             new DateTimeImmutable('2026-01-15T10:00:00+00:00')->format(DateTimeInterface::ATOM),

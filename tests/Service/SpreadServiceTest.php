@@ -84,6 +84,12 @@ class SpreadServiceTest extends TestCase
             'toCurrency' => Currency::PLN,
             'expectedResult' => '0.53',
         ];
+        yield 'PLN to HUF matches README average-liquidity example' => [
+            'price' => '100',
+            'fromCurrency' => Currency::PLN,
+            'toCurrency' => Currency::HUF,
+            'expectedResult' => '1.05',
+        ];
         yield 'USD to EUR with higher price' => [
             'price' => '200',
             'fromCurrency' => Currency::USD,

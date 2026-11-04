@@ -56,27 +56,42 @@ class ExchangeRateServiceTest extends TestCase
         yield 'PLN to PLN' => [
             'from' => Currency::PLN,
             'to' => Currency::PLN,
-            'expectedResult' => '1.000000',
+            'expectedResult' => '1.00000000000000000000',
         ];
         yield 'EUR to PLN' => [
             'from' => Currency::EUR,
             'to' => Currency::PLN,
-            'expectedResult' => '4.238900',
+            'expectedResult' => '4.23890000000000000000',
         ];
         yield 'PLN to EUR' => [
             'from' => Currency::PLN,
             'to' => Currency::EUR,
-            'expectedResult' => '0.235910',
+            'expectedResult' => '0.23591025973719597065',
         ];
         yield 'USD to EUR' => [
             'from' => Currency::USD,
             'to' => Currency::EUR,
-            'expectedResult' => '0.860294',
+            'expectedResult' => '0.86029394418363254618',
         ];
         yield 'GBP to CHF' => [
             'from' => Currency::GBP,
             'to' => Currency::CHF,
-            'expectedResult' => '1.053143',
+            'expectedResult' => '1.05314259822642242216',
         ];
+    }
+
+    public function testExchangeUsesFullRecordedRateWhenSixDecimalRateWouldChangeRoundedGross(): void
+    {
+        $rate = $this->exchangeRateService->getExchangeRateBetween(Currency::PLN, Currency::EUR);
+        $gross = $this->exchangeRateService->exchange(\Brick\Money\Money::of('100000.00', 'PLN'), Currency::EUR);
+
+        self::assertSame('0.23591025973719597065', $rate);
+        self::assertSame('23591.03', $gross->getAmount()->toScale(2)->toString());
+    }
+
+    public function testAntifraudThresholdUsesExactUnroundedReferenceRate(): void
+    {
+        self::assertFalse($this->exchangeRateService->exceedsEurThreshold(\Brick\Money\Money::of('63583.50', 'PLN'), '15000'));
+        self::assertTrue($this->exchangeRateService->exceedsEurThreshold(\Brick\Money\Money::of('63583.51', 'PLN'), '15000'));
     }
 }

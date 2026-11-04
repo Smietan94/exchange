@@ -179,26 +179,10 @@ class WalletControllerTest extends TestCase
         self::assertSame(201, $response->getStatusCode());
     }
 
-    public function testTransferAcceptsNumericJsonAmount(): void
+    public function testTransferRejectsNumericJsonAmount(): void
     {
         $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
-        $transaction = new Transaction(
-            id: 42,
-            fromWalletId: 1,
-            toWalletId: 2,
-            fromAmount: Money::of('100.50', 'PLN'),
-            toAmount: Money::of('25.00', 'EUR'),
-            fromCurrency: Currency::PLN,
-            toCurrency: Currency::EUR,
-            spread: Money::of('0.10', 'EUR'),
-            exchangeRate: '0.250000',
-            status: TransactionStatus::PENDING,
-            requiresAntiFraudCheck: false,
-            antiFraudCheckedAt: null,
-            createdAt: new DateTimeImmutable(),
-        );
-        $this->transferService->expects(self::once())->method('transfer')
-            ->with(1, 1, 2, '100.5')->willReturn($transaction);
+        $this->transferService->expects(self::never())->method('transfer');
 
         $request = new Request(content: json_encode([
             'fromWalletId' => 1,
@@ -206,7 +190,7 @@ class WalletControllerTest extends TestCase
             'amount' => 100.5,
         ], JSON_THROW_ON_ERROR));
 
-        self::assertSame(201, $this->controller->transfer($request, $user)->getStatusCode());
+        self::assertSame(400, $this->controller->transfer($request, $user)->getStatusCode());
     }
 
     /**
@@ -295,6 +279,8 @@ class WalletControllerTest extends TestCase
     public static function unsupportedTransferAmountsProvider(): array
     {
         return [
+            'numeric integer' => [100],
+            'numeric decimal' => [100.5],
             'zero' => ['0'],
             'non numeric' => ['abc'],
             'NaN' => ['NaN'],

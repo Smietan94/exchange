@@ -61,9 +61,14 @@ readonly class TransferService
         $toCurrency = $toWallet->getCurrency();
 
         $exchangeRate = $this->exchangeRateService->getExchangeRateBetween($fromCurrency, $toCurrency);
+        // Rounding policy: round converted gross once to the target currency unit,
+        // calculate and round spread from that gross, then derive net by subtraction.
         $grossToAmount = $this->exchangeRateService->exchange($sourceAmount, $toCurrency);
         $spread = $this->spreadService->calculateSpread($grossToAmount, $fromCurrency, $toCurrency);
         $toAmount = $grossToAmount->minus($spread);
+        if (!$toAmount->isPositive()) {
+            throw new InvalidArgumentException('Transfer amount is too small to produce a positive destination amount after spread.');
+        }
 
         $transaction = Transaction::create(
             fromWalletId: $fromWalletId,

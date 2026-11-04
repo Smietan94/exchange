@@ -17,6 +17,12 @@ offered to the client. The spread is calculated dynamically based on the liquidi
 spread applied is `0.5% ÷ 0.475 ≈ 1.05%` of the transaction value — compared to only `0.5% ÷ 0.975 ≈ 0.51%` for a
 USD/EUR pair.
 
+For an exchange, the source amount is converted using the full reference-rate ratio and rounded `HALF_UP` once to the
+target currency's smallest unit. This rounded gross amount is the `price` in the spread formula. The spread is computed
+from it and rounded `HALF_UP` once to the same unit; the client's net amount is gross minus spread. Therefore the
+amount credited to the client plus the spread credited to the company equals the rounded gross amount exactly. The
+antifraud threshold compares the unrounded gross EUR value strictly against EUR 15,000.
+
 Earnings across all wallets are tracked via the `app:company-wallet` console command.
 
 ---
