@@ -9,7 +9,6 @@ use App\Exception\WalletBlockedException;
 use App\Exception\WalletNotFoundException;
 use App\Repository\WalletRepositoryInterface;
 use Brick\Money\Money;
-use DateTimeImmutable;
 
 readonly class DepositService
 {
@@ -36,10 +35,23 @@ readonly class DepositService
             throw new \InvalidArgumentException('Deposit amount cannot exceed '.self::MAX_AMOUNT.'.');
         }
 
-        $wallet->setBalance($wallet->getBalance()->plus($depositAmount));
-        $wallet->setLastActivityAt(new DateTimeImmutable());
-        $this->walletRepository->save($wallet);
+        if (!$this->walletRepository->depositBalance($walletId, $depositAmount)) {
+            $currentWallet = $this->walletRepository->findById($walletId);
+            if (null === $currentWallet || $currentWallet->getUserId() !== $userId) {
+                throw new WalletNotFoundException($walletId);
+            }
+            if ($currentWallet->isBlocked()) {
+                throw new WalletBlockedException($walletId);
+            }
 
-        return $wallet;
+            throw new \RuntimeException('Deposit could not be applied.');
+        }
+
+        $updatedWallet = $this->walletRepository->findById($walletId);
+        if (null === $updatedWallet || $updatedWallet->getUserId() !== $userId) {
+            throw new WalletNotFoundException($walletId);
+        }
+
+        return $updatedWallet;
     }
 }
