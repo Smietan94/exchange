@@ -6,6 +6,7 @@ namespace App\Tests\Entity;
 
 use App\Entity\Wallet;
 use App\Enum\Currency;
+use Brick\Money\Money;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 
@@ -18,7 +19,7 @@ class WalletTest extends TestCase
         $this->assertNull($wallet->getId());
         $this->assertSame(5, $wallet->getUserId());
         $this->assertSame(Currency::EUR, $wallet->getCurrency());
-        $this->assertSame(0.0, $wallet->getBalance());
+        $this->assertTrue(Money::zero('EUR')->isEqualTo($wallet->getBalance()));
         $this->assertFalse($wallet->isBlocked());
         $this->assertNull($wallet->getLastActivityAt());
     }
@@ -26,9 +27,9 @@ class WalletTest extends TestCase
     public function testSetBalance(): void
     {
         $wallet = Wallet::create(userId: 1, currency: Currency::PLN);
-        $wallet->setBalance(150.50);
+        $wallet->setBalance(Money::of('150.50', 'PLN'));
 
-        $this->assertSame(150.50, $wallet->getBalance());
+        $this->assertTrue(Money::of('150.50', 'PLN')->isEqualTo($wallet->getBalance()));
     }
 
     public function testSetIsBlocked(): void

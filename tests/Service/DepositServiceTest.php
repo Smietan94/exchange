@@ -10,6 +10,7 @@ use App\Exception\WalletBlockedException;
 use App\Exception\WalletNotFoundException;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\DepositService;
+use Brick\Money\Money;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 
@@ -43,7 +44,7 @@ class DepositServiceTest extends TestCase
 
         $result = $this->depositService->deposit($userId, 1, '500.00');
 
-        self::assertSame(500.0, $result->getBalance());
+        self::assertTrue(Money::of('500.00', 'PLN')->isEqualTo($result->getBalance()));
         self::assertNotNull($result->getLastActivityAt());
     }
 
@@ -51,7 +52,7 @@ class DepositServiceTest extends TestCase
     {
         $userId = 1;
         $wallet = Wallet::create($userId, Currency::EUR);
-        $wallet->setBalance(200.0);
+        $wallet->setBalance(Money::of('200.00', 'EUR'));
 
         $this->walletRepository
             ->method('findById')
@@ -59,7 +60,7 @@ class DepositServiceTest extends TestCase
 
         $this->depositService->deposit($userId, 1, '300.00');
 
-        self::assertSame(500.0, $wallet->getBalance());
+        self::assertTrue(Money::of('500.00', 'EUR')->isEqualTo($wallet->getBalance()));
     }
 
     public function testDepositThrowsWhenWalletNotFound(): void

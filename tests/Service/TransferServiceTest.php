@@ -16,6 +16,7 @@ use App\Service\ExchangeRateService;
 use App\Service\SpreadService;
 use App\Service\TransactionProcessorService;
 use App\Service\TransferService;
+use Brick\Money\Money;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -72,7 +73,7 @@ class TransferServiceTest extends TestCase
         $fromWallet
             ->method('getCurrency')
             ->willReturn(Currency::PLN);
-        $fromWallet->method('getBalance')->willReturn(5000.0);
+        $fromWallet->method('getBalance')->willReturn(Money::of('5000.00', 'PLN'));
         $fromWallet
             ->method('getUserId')
             ->willReturn($userId);
@@ -80,7 +81,7 @@ class TransferServiceTest extends TestCase
         $toWallet
             ->method('getCurrency')
             ->willReturn(Currency::EUR);
-        $toWallet->method('getBalance')->willReturn(100.0);
+        $toWallet->method('getBalance')->willReturn(Money::of('100.00', 'EUR'));
         $toWallet
             ->method('getUserId')
             ->willReturn($userId);
@@ -94,21 +95,23 @@ class TransferServiceTest extends TestCase
             ]);
 
         $this->exchangeRateService
-            ->expects(self::exactly(2))
+            ->expects(self::once())
             ->method('getExchangeRateBetween')
             ->with(Currency::PLN, Currency::EUR)
-            ->willReturn(0.25);
+            ->willReturn('0.250000');
+        $this->exchangeRateService->method('exchange')->willReturn(Money::of('250.00', 'EUR'));
+        $this->exchangeRateService->method('exceedsEurThreshold')->willReturn(false);
 
         $this->spreadService
             ->expects(self::once())
             ->method('calculateSpread')
-            ->with(250.0, Currency::PLN, Currency::EUR)
-            ->willReturn('1.00');
+            ->with(Money::of('250.00', 'EUR'), Currency::PLN, Currency::EUR)
+            ->willReturn(Money::of('1.00', 'EUR'));
 
         $this->walletRepository->expects(self::once())
-            ->method('reserveBalance')->with(1, '1000.00')->willReturn(true);
-        $this->walletRepository->expects(self::once())->method('addToBalance')->with(2, '249.0000');
-        $this->companyWalletRepository->expects(self::once())->method('addToBalance')->with(Currency::EUR, '1.00');
+            ->method('reserveBalance')->with(1, Money::of('1000.00', 'PLN'))->willReturn(true);
+        $this->walletRepository->expects(self::once())->method('addToBalance')->with(2, Money::of('249.00', 'EUR'));
+        $this->companyWalletRepository->expects(self::once())->method('addToBalance')->with(Currency::EUR, Money::of('1.00', 'EUR'));
 
         $this->transactionRepository
             ->expects(self::once())
@@ -123,10 +126,10 @@ class TransferServiceTest extends TestCase
 
         self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
         self::assertFalse($transaction->requiresAntiFraudCheck());
-        self::assertSame('1000.00', $transaction->getFromAmount());
-        self::assertSame('249.0000', $transaction->getToAmount());
+        self::assertTrue(Money::of('1000.00', 'PLN')->isEqualTo($transaction->getFromAmount()));
+        self::assertTrue(Money::of('249.00', 'EUR')->isEqualTo($transaction->getToAmount()));
         self::assertSame('0.250000', $transaction->getExchangeRate());
-        self::assertSame('1.00', $transaction->getSpread());
+        self::assertTrue(Money::of('1.00', 'EUR')->isEqualTo($transaction->getSpread()));
         self::assertSame(Currency::PLN, $transaction->getFromCurrency());
         self::assertSame(Currency::EUR, $transaction->getToCurrency());
     }
@@ -141,7 +144,7 @@ class TransferServiceTest extends TestCase
     public function testTransferRejectsInsufficientBalance(): void
     {
         $wallet = Wallet::create(1, Currency::PLN);
-        $wallet->setBalance(10.0);
+        $wallet->setBalance(Money::of('10.00', 'PLN'));
         $this->walletRepository->method('findById')->willReturnMap([[1, $wallet], [2, Wallet::create(1, Currency::EUR)]]);
         $this->walletRepository->expects(self::never())->method('reserveBalance');
         $this->transactionRepository->expects(self::never())->method('save');
@@ -152,22 +155,24 @@ class TransferServiceTest extends TestCase
     public function testOrdinaryTransferRollsBackReservationAndRecordWhenImmediateProcessingFails(): void
     {
         $from = Wallet::create(1, Currency::PLN);
-        $from->setBalance(500.0);
+        $from->setBalance(Money::of('500.00', 'PLN'));
         $to = Wallet::create(1, Currency::EUR);
         $this->walletRepository->method('findById')->willReturnMap([[1, $from], [2, $to]]);
-        $this->exchangeRateService->method('getExchangeRateBetween')->willReturn(0.25);
-        $this->spreadService->method('calculateSpread')->willReturn('1.00');
+        $this->exchangeRateService->method('getExchangeRateBetween')->willReturn('0.250000');
+        $this->exchangeRateService->method('exchange')->willReturn(Money::of('25.00', 'EUR'));
+        $this->exchangeRateService->method('exceedsEurThreshold')->willReturn(false);
+        $this->spreadService->method('calculateSpread')->willReturn(Money::of('1.00', 'EUR'));
 
         $this->databaseState = [
-            'sourceBalance' => 500.0,
-            'destinationBalance' => 100.0,
-            'companyBalance' => 2.0,
+            'sourceBalance' => '500.00',
+            'destinationBalance' => '100.00',
+            'companyBalance' => '2.00',
             'transactionSaved' => false,
             'status' => TransactionStatus::PENDING,
         ];
         $this->walletRepository->expects(self::once())->method('reserveBalance')->willReturnCallback(
-            function (int $walletId, string $amount): bool {
-                $this->databaseState['sourceBalance'] -= (float) $amount;
+            function (int $walletId, Money $amount): bool {
+                $this->databaseState['sourceBalance'] = Money::of($this->databaseState['sourceBalance'], 'PLN')->minus($amount)->getAmount()->toString();
 
                 return true;
             },
@@ -188,8 +193,8 @@ class TransferServiceTest extends TestCase
             },
         );
         $this->walletRepository->method('addToBalance')->willReturnCallback(
-            function (int $walletId, string $amount): void {
-                $this->databaseState['destinationBalance'] += (float) $amount;
+            function (int $walletId, Money $amount): void {
+                $this->databaseState['destinationBalance'] = Money::of($this->databaseState['destinationBalance'], 'EUR')->plus($amount)->getAmount()->toString();
             },
         );
         $this->companyWalletRepository->expects(self::once())->method('addToBalance')
@@ -203,9 +208,9 @@ class TransferServiceTest extends TestCase
         }
 
         self::assertSame([
-            'sourceBalance' => 500.0,
-            'destinationBalance' => 100.0,
-            'companyBalance' => 2.0,
+            'sourceBalance' => '500.00',
+            'destinationBalance' => '100.00',
+            'companyBalance' => '2.00',
             'transactionSaved' => false,
             'status' => TransactionStatus::PENDING,
         ], $this->databaseState);
@@ -213,7 +218,7 @@ class TransferServiceTest extends TestCase
 
     public function testExactlyFifteenThousandEuroDoesNotRequireFraudReview(): void
     {
-        $transaction = $this->transferUsingActualRates(Currency::EUR, Currency::USD, '15000.0000');
+        $transaction = $this->transferUsingActualRates(Currency::EUR, Currency::USD, '15000.00');
 
         self::assertFalse($transaction->requiresAntiFraudCheck());
         self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
@@ -221,16 +226,16 @@ class TransferServiceTest extends TestCase
 
     public function testAmountAboveFifteenThousandEuroRequiresFraudReview(): void
     {
-        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.5001');
+        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.51');
 
         self::assertTrue($transaction->requiresAntiFraudCheck());
         self::assertSame(TransactionStatus::FRAUD_REVIEW, $transaction->getStatus());
-        self::assertLessThan(15_000.0, (float) $transaction->getToAmount());
+        self::assertTrue($transaction->getToAmount()->isLessThan(Money::of('15000.00', 'EUR')));
     }
 
     public function testAmountBelowFifteenThousandEuroDoesNotRequireFraudReview(): void
     {
-        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.4999');
+        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.49');
 
         self::assertFalse($transaction->requiresAntiFraudCheck());
         self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
@@ -242,7 +247,7 @@ class TransferServiceTest extends TestCase
 
         self::assertTrue($transaction->requiresAntiFraudCheck());
         self::assertSame(TransactionStatus::FRAUD_REVIEW, $transaction->getStatus());
-        self::assertLessThan(15_000.0, (float) $transaction->getToAmount());
+        self::assertTrue($transaction->getToAmount()->isLessThan(Money::of('15000.00', 'GBP')));
     }
 
     #[DataProvider('invalidAmountsProvider')]
@@ -279,7 +284,7 @@ class TransferServiceTest extends TestCase
     private function transferUsingActualRates(Currency $fromCurrency, Currency $toCurrency, string $amount): Transaction
     {
         $from = Wallet::create(1, $fromCurrency);
-        $from->setBalance(200_000_000.0);
+        $from->setBalance(Money::of('200000000', $fromCurrency->value));
         $to = Wallet::create(1, $toCurrency);
         $this->walletRepository->method('findById')->willReturnMap([[1, $from], [2, $to]]);
         $this->walletRepository->method('reserveBalance')->willReturn(true);

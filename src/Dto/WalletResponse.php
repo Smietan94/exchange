@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Dto;
 
 use App\Entity\Wallet;
+use App\Service\MoneyAmount;
 use DateTimeInterface;
 use JsonSerializable;
 
@@ -19,7 +20,7 @@ final readonly class WalletResponse implements JsonSerializable
         return [
             'id' => $this->wallet->getId(),
             'currency' => $this->wallet->getCurrency()->value,
-            'balance' => $this->wallet->getBalance(),
+            'balance' => MoneyAmount::format($this->wallet->getBalance()),
             'isBlocked' => $this->wallet->isBlocked(),
             'lastActivityAt' => $this->wallet->getLastActivityAt()?->format(DateTimeInterface::ATOM),
         ];

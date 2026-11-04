@@ -21,7 +21,7 @@ class WalletResponseTest extends TestCase
 
         self::assertNull($data['id']);
         self::assertSame('PLN', $data['currency']);
-        self::assertSame(0.0, $data['balance']);
+        self::assertSame('0.00', $data['balance']);
         self::assertFalse($data['isBlocked']);
         self::assertNull($data['lastActivityAt']);
     }

@@ -13,7 +13,7 @@ use InvalidArgumentException;
 
 readonly class TransferService
 {
-    private const float EUR_ANTI_FRAUD_THRESHOLD = 15_000.0;
+    private const string EUR_ANTI_FRAUD_THRESHOLD = '15000';
 
     public function __construct(
         private WalletRepositoryInterface $walletRepository,
@@ -37,8 +37,6 @@ readonly class TransferService
         if (null === $normalizedAmount) {
             throw new InvalidArgumentException('Transfer amount must be positive.');
         }
-        $fromAmount = $normalizedAmount;
-
         $fromWallet = $this->walletRepository->findById($fromWalletId);
         if (null === $fromWallet || $fromWallet->getUserId() !== $userId) {
             throw new WalletNotFoundException($fromWalletId);
@@ -49,7 +47,13 @@ readonly class TransferService
             throw new WalletNotFoundException($toWalletId);
         }
 
-        if ((float) $fromAmount > $fromWallet->getBalance()) {
+        try {
+            $sourceAmount = MoneyAmount::parse($normalizedAmount, $fromWallet->getCurrency());
+        } catch (InvalidArgumentException $exception) {
+            throw new InvalidArgumentException('Transfer amount precision is not supported by the source currency.', previous: $exception);
+        }
+
+        if ($sourceAmount->isGreaterThan($fromWallet->getBalance())) {
             throw new InvalidArgumentException('Insufficient wallet balance.');
         }
 
@@ -57,28 +61,24 @@ readonly class TransferService
         $toCurrency = $toWallet->getCurrency();
 
         $exchangeRate = $this->exchangeRateService->getExchangeRateBetween($fromCurrency, $toCurrency);
-        $amountInEur = (float) $fromAmount
-            * $this->exchangeRateService->getExchangeRateBetween($fromCurrency, Currency::EUR);
-        $rawToAmount = (float) $fromAmount * $exchangeRate;
-        $spread = $this->spreadService->calculateSpread($rawToAmount, $fromCurrency, $toCurrency);
-        $toAmount = $rawToAmount - (float) $spread;
-
-        $toAmountFormatted = number_format($toAmount, 4, '.', '');
+        $grossToAmount = $this->exchangeRateService->exchange($sourceAmount, $toCurrency);
+        $spread = $this->spreadService->calculateSpread($grossToAmount, $fromCurrency, $toCurrency);
+        $toAmount = $grossToAmount->minus($spread);
 
         $transaction = Transaction::create(
             fromWalletId: $fromWalletId,
             toWalletId: $toWalletId,
-            fromAmount: $fromAmount,
-            toAmount: $toAmountFormatted,
+            fromAmount: $sourceAmount,
+            toAmount: $toAmount,
             fromCurrency: $fromCurrency,
             toCurrency: $toCurrency,
             spread: $spread,
-            exchangeRate: number_format($exchangeRate, 6, '.', ''),
-            requiresAntiFraudCheck: $amountInEur > self::EUR_ANTI_FRAUD_THRESHOLD,
+            exchangeRate: $exchangeRate,
+            requiresAntiFraudCheck: $this->exchangeRateService->exceedsEurThreshold($sourceAmount, self::EUR_ANTI_FRAUD_THRESHOLD),
         );
 
-        $this->transactionRepository->transactional(function () use ($fromWalletId, $fromAmount, $transaction): void {
-            if (!$this->walletRepository->reserveBalance($fromWalletId, $fromAmount)) {
+        $this->transactionRepository->transactional(function () use ($fromWalletId, $sourceAmount, $transaction): void {
+            if (!$this->walletRepository->reserveBalance($fromWalletId, $sourceAmount)) {
                 throw new InvalidArgumentException('Insufficient wallet balance.');
             }
             $this->transactionRepository->save($transaction);
@@ -93,23 +93,6 @@ readonly class TransferService
 
     public static function normalizeAmount(mixed $amount): ?string
     {
-        if (!is_string($amount) && !is_int($amount) && !is_float($amount)) {
-            return null;
-        }
-        if (is_float($amount) && !is_finite($amount)) {
-            return null;
-        }
-
-        $amountString = (string) $amount;
-        if (1 !== preg_match('/\A\d{1,11}(?:\.\d{1,4})?\z/', $amountString)) {
-            return null;
-        }
-
-        $numericAmount = (float) $amountString;
-        if (!is_finite($numericAmount) || $numericAmount <= 0) {
-            return null;
-        }
-
-        return $amountString;
+        return MoneyAmount::normalizeInput($amount);
     }
 }

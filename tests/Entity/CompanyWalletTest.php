@@ -6,6 +6,7 @@ namespace App\Tests\Entity;
 
 use App\Entity\CompanyWallet;
 use App\Enum\Currency;
+use Brick\Money\Money;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 
@@ -17,7 +18,7 @@ class CompanyWalletTest extends TestCase
 
         $this->assertNull($wallet->getId());
         $this->assertSame(Currency::EUR, $wallet->getCurrency());
-        $this->assertSame(0.0, $wallet->getBalance());
+        $this->assertTrue(Money::zero('EUR')->isEqualTo($wallet->getBalance()));
     }
 
     public function testCreateSetsTimestamps(): void
@@ -42,18 +43,18 @@ class CompanyWalletTest extends TestCase
     public function testSetBalance(): void
     {
         $wallet = CompanyWallet::create(Currency::PLN);
-        $wallet->setBalance(250.75);
+        $wallet->setBalance(Money::of('250.75', 'PLN'));
 
-        $this->assertSame(250.75, $wallet->getBalance());
+        $this->assertTrue(Money::of('250.75', 'PLN')->isEqualTo($wallet->getBalance()));
     }
 
     public function testSetBalanceToZero(): void
     {
         $wallet = CompanyWallet::create(Currency::PLN);
-        $wallet->setBalance(100.0);
-        $wallet->setBalance(0.0);
+        $wallet->setBalance(Money::of('100.00', 'PLN'));
+        $wallet->setBalance(Money::zero('PLN'));
 
-        $this->assertSame(0.0, $wallet->getBalance());
+        $this->assertTrue(Money::zero('PLN')->isEqualTo($wallet->getBalance()));
     }
 
     public function testGetCurrency(): void
