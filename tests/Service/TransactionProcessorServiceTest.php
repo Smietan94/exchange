@@ -177,6 +177,114 @@ class TransactionProcessorServiceTest extends TestCase
         $this->processor->rejectFraudReview($transaction);
     }
 
+    public function testStalePendingObjectDoesNotBookWhenDatabaseStatusWasAlreadyChanged(): void
+    {
+        $transaction = $this->makeTransaction(false);
+        $this->walletRepository->expects(self::exactly(2))->method('findById')->willReturnMap([
+            [1, Wallet::create(1, Currency::PLN)],
+            [2, Wallet::create(1, Currency::EUR)],
+        ]);
+        $this->transactionRepository->expects(self::once())->method('transition')
+            ->with($transaction, TransactionStatus::PENDING, TransactionStatus::COMPLETED, null)
+            ->willReturn(false);
+        $this->walletRepository->expects(self::never())->method('addToBalance');
+        $this->companyWalletRepository->expects(self::never())->method('addToBalance');
+
+        $this->processor->complete($transaction);
+
+        self::assertSame(TransactionStatus::PENDING, $transaction->getStatus());
+    }
+
+    public function testStaleFraudReviewObjectCannotApproveOrRejectAfterAnotherDecision(): void
+    {
+        $approvalCandidate = $this->makeTransaction(true);
+        $rejectionCandidate = $this->makeTransaction(true);
+        $this->walletRepository->method('findById')->willReturnMap([
+            [1, Wallet::create(1, Currency::PLN)],
+            [2, Wallet::create(1, Currency::EUR)],
+        ]);
+        $this->transactionRepository->expects(self::exactly(2))->method('transition')->willReturn(false);
+        $this->walletRepository->expects(self::never())->method('addToBalance');
+        $this->companyWalletRepository->expects(self::never())->method('addToBalance');
+
+        $this->processor->approveFraudReview($approvalCandidate);
+        $this->processor->rejectFraudReview($rejectionCandidate);
+
+        self::assertSame(TransactionStatus::FRAUD_REVIEW, $approvalCandidate->getStatus());
+        self::assertSame(TransactionStatus::FRAUD_REVIEW, $rejectionCandidate->getStatus());
+        self::assertNull($approvalCandidate->getAntiFraudCheckedAt());
+        self::assertNull($rejectionCandidate->getAntiFraudCheckedAt());
+    }
+
+    public function testCompetingProcessorsOnlyBookTheDecisionThatWinsConditionalTransition(): void
+    {
+        $approvalCandidate = $this->makeTransaction(true);
+        $rejectionCandidate = $this->makeTransaction(true);
+        $source = Wallet::create(1, Currency::PLN);
+        $destination = Wallet::create(1, Currency::EUR);
+        $this->walletRepository->method('findById')->willReturnMap([[1, $source], [2, $destination]]);
+        $this->databaseState = [
+            'status' => TransactionStatus::FRAUD_REVIEW,
+            'destination' => Money::zero('EUR'),
+            'company' => Money::zero('EUR'),
+        ];
+        $this->transactionRepository->method('transition')->willReturnCallback(
+            function (Transaction $candidate, TransactionStatus $expected, TransactionStatus $next): bool {
+                if ($this->databaseState['status'] !== $expected) {
+                    return false;
+                }
+
+                $this->databaseState['status'] = $next;
+
+                return true;
+            },
+        );
+        $this->walletRepository->expects(self::once())->method('addToBalance')->willReturnCallback(
+            function (int $walletId, Money $amount): void {
+                $this->databaseState['destination'] = $this->databaseState['destination']->plus($amount);
+            },
+        );
+        $this->companyWalletRepository->expects(self::once())->method('addToBalance')->willReturnCallback(
+            function (Currency $currency, Money $amount): void {
+                $this->databaseState['company'] = $this->databaseState['company']->plus($amount);
+            },
+        );
+        $this->walletRepository->expects(self::never())->method('reserveBalance');
+
+        // Both objects were loaded while FRAUD_REVIEW was current; the first claim wins.
+        $this->processor->approveFraudReview($approvalCandidate);
+        $this->processor->rejectFraudReview($rejectionCandidate);
+
+        self::assertSame(TransactionStatus::COMPLETED, $this->databaseState['status']);
+        self::assertTrue(Money::of('25.00', 'EUR')->isEqualTo($this->databaseState['destination']));
+        self::assertTrue(Money::of('0.50', 'EUR')->isEqualTo($this->databaseState['company']));
+        self::assertSame(TransactionStatus::COMPLETED, $approvalCandidate->getStatus());
+        self::assertSame(TransactionStatus::FRAUD_REVIEW, $rejectionCandidate->getStatus());
+    }
+
+    public function testUnsavedTransactionCannotBeProcessed(): void
+    {
+        $transaction = Transaction::create(
+            fromWalletId: 1,
+            toWalletId: 2,
+            fromAmount: Money::of('100.00', 'PLN'),
+            toAmount: Money::of('25.00', 'EUR'),
+            fromCurrency: Currency::PLN,
+            toCurrency: Currency::EUR,
+            spread: Money::of('0.50', 'EUR'),
+            exchangeRate: '0.250000',
+            requiresAntiFraudCheck: true,
+        );
+        $this->transactionRepository->expects(self::never())->method('transactional');
+        $this->transactionRepository->expects(self::never())->method('transition');
+        $this->walletRepository->expects(self::never())->method('findById');
+        $this->walletRepository->expects(self::never())->method('addToBalance');
+        $this->companyWalletRepository->expects(self::never())->method('addToBalance');
+
+        $this->processor->approveFraudReview($transaction);
+        $this->processor->rejectFraudReview($transaction);
+    }
+
     public function testFraudDecisionDoesNothingForNonFraudReviewStatus(): void
     {
         $transaction = $this->makeTransaction(false);
@@ -246,7 +354,8 @@ class TransactionProcessorServiceTest extends TestCase
 
     private function makeTransaction(bool $requiresAntiFraudCheck): Transaction
     {
-        return Transaction::create(
+        return new Transaction(
+            id: 123,
             fromWalletId: 1,
             toWalletId: 2,
             fromAmount: Money::of('100.00', 'PLN'),
@@ -255,7 +364,10 @@ class TransactionProcessorServiceTest extends TestCase
             toCurrency: Currency::EUR,
             spread: Money::of('0.50', 'EUR'),
             exchangeRate: '0.250000',
+            status: $requiresAntiFraudCheck ? TransactionStatus::FRAUD_REVIEW : TransactionStatus::PENDING,
             requiresAntiFraudCheck: $requiresAntiFraudCheck,
+            antiFraudCheckedAt: null,
+            createdAt: new DateTimeImmutable(),
         );
     }
 }

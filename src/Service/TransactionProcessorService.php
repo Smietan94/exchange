@@ -32,7 +32,7 @@ final readonly class TransactionProcessorService
 
     public function rejectFraudReview(Transaction $transaction): void
     {
-        if (TransactionStatus::FRAUD_REVIEW !== $transaction->getStatus()) {
+        if (null === $transaction->getId() || TransactionStatus::FRAUD_REVIEW !== $transaction->getStatus()) {
             return;
         }
 
@@ -65,7 +65,7 @@ final readonly class TransactionProcessorService
 
     private function completeFromStatus(Transaction $transaction, TransactionStatus $expectedStatus): void
     {
-        if ($expectedStatus !== $transaction->getStatus()) {
+        if (null === $transaction->getId() || $expectedStatus !== $transaction->getStatus()) {
             return;
         }
 
