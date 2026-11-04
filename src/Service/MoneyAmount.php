@@ -15,16 +15,6 @@ final class MoneyAmount
 {
     public static function normalizeInput(mixed $amount): ?string
     {
-        if (is_int($amount)) {
-            $amount = (string) $amount;
-        } elseif (is_float($amount)) {
-            if (!is_finite($amount)) {
-                return null;
-            }
-
-            $amount = (string) $amount;
-        }
-
         if (!is_string($amount) || 1 !== preg_match('/\A(?:0|[1-9]\d{0,10})(?:\.\d{1,4})?\z/', $amount)) {
             return null;
         }

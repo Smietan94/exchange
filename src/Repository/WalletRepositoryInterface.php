@@ -21,5 +21,7 @@ interface WalletRepositoryInterface
 
     public function reserveBalance(int $walletId, Money $amount): bool;
 
+    public function depositBalance(int $walletId, Money $amount): bool;
+
     public function addToBalance(int $walletId, Money $amount): void;
 }

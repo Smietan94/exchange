@@ -33,14 +33,21 @@ class DepositServiceTest extends TestCase
 
         $this->walletRepository
             ->expects(self::once())
+            ->method('depositBalance')
+            ->with(1, Money::of('500.00', 'PLN'))
+            ->willReturnCallback(function (int $walletId, Money $amount) use ($wallet): bool {
+                $wallet->setBalance($wallet->getBalance()->plus($amount));
+                $wallet->setLastActivityAt(new \DateTimeImmutable());
+
+                return true;
+            });
+
+        $this->walletRepository
+            ->expects(self::exactly(2))
             ->method('findById')
             ->with(1)
             ->willReturn($wallet);
-
-        $this->walletRepository
-            ->expects(self::once())
-            ->method('save')
-            ->with($wallet);
+        $this->walletRepository->expects(self::never())->method('save');
 
         $result = $this->depositService->deposit($userId, 1, '500.00');
 
@@ -57,6 +64,13 @@ class DepositServiceTest extends TestCase
         $this->walletRepository
             ->method('findById')
             ->willReturn($wallet);
+        $this->walletRepository->expects(self::once())->method('depositBalance')
+            ->willReturnCallback(static function (int $walletId, Money $amount) use ($wallet): bool {
+                $wallet->setBalance($wallet->getBalance()->plus($amount));
+
+                return true;
+            });
+        $this->walletRepository->expects(self::never())->method('save');
 
         $this->depositService->deposit($userId, 1, '300.00');
 
@@ -71,7 +85,7 @@ class DepositServiceTest extends TestCase
             ->with(99)
             ->willReturn(null);
 
-        $this->walletRepository->expects(self::never())->method('save');
+        $this->walletRepository->expects(self::never())->method('depositBalance');
 
         $this->expectException(WalletNotFoundException::class);
         $this->expectExceptionMessage('Wallet 99 not found.');
@@ -89,7 +103,7 @@ class DepositServiceTest extends TestCase
             ->with(1)
             ->willReturn($wallet);
 
-        $this->walletRepository->expects(self::never())->method('save');
+        $this->walletRepository->expects(self::never())->method('depositBalance');
 
         $this->expectException(WalletNotFoundException::class);
         $this->expectExceptionMessage('Wallet 1 not found.');
@@ -109,11 +123,28 @@ class DepositServiceTest extends TestCase
             ->with(1)
             ->willReturn($wallet);
 
-        $this->walletRepository->expects(self::never())->method('save');
+        $this->walletRepository->expects(self::never())->method('depositBalance');
 
         $this->expectException(WalletBlockedException::class);
         $this->expectExceptionMessage('Wallet 1 is blocked.');
 
+        $this->depositService->deposit($userId, 1, '100.00');
+    }
+
+    public function testDepositRejectsWalletBlockedAfterInitialRead(): void
+    {
+        $userId = 1;
+        $wallet = Wallet::create($userId, Currency::PLN);
+        $blockedWallet = Wallet::create($userId, Currency::PLN);
+        $blockedWallet->setIsBlocked(true);
+
+        $this->walletRepository->expects(self::exactly(2))
+            ->method('findById')
+            ->willReturnOnConsecutiveCalls($wallet, $blockedWallet);
+        $this->walletRepository->expects(self::once())->method('depositBalance')->willReturn(false);
+        $this->walletRepository->expects(self::never())->method('save');
+
+        $this->expectException(WalletBlockedException::class);
         $this->depositService->deposit($userId, 1, '100.00');
     }
 }

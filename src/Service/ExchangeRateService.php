@@ -14,6 +14,8 @@ use Brick\Money\Context\DefaultContext;
 
 class ExchangeRateService
 {
+    private const int RECORDED_RATE_SCALE = 20;
+
     public function getExchangeRate(Currency $currency): string
     {
         return match ($currency) {
@@ -31,26 +33,30 @@ class ExchangeRateService
     {
         return BigRational::of($this->getExchangeRate($from))
             ->dividedBy($this->getExchangeRate($to))
-            ->toScale(6, RoundingMode::HalfUp)
+            ->toScale(self::RECORDED_RATE_SCALE, RoundingMode::HalfUp)
             ->toString();
     }
 
     public function exchange(Money $amount, Currency $to): Money
     {
-        return $this->exchangeAsRational($amount, $to)->toContext(new DefaultContext(), RoundingMode::HalfUp);
+        $fromCurrency = Currency::from($amount->getCurrency()->getCurrencyCode());
+        // Calculate from the same high-precision rate stored on the transaction.
+        return $this->exchangeAsRational($amount, $to, $this->getExchangeRateBetween($fromCurrency, $to))
+            ->toContext(new DefaultContext(), RoundingMode::HalfUp);
     }
 
     public function exceedsEurThreshold(Money $amount, string $threshold): bool
     {
-        return $this->exchangeAsRational($amount, Currency::EUR)->isGreaterThan($threshold);
+        $fromCurrency = Currency::from($amount->getCurrency()->getCurrencyCode());
+        $exactRate = BigRational::of($this->getExchangeRate($fromCurrency))
+            ->dividedBy($this->getExchangeRate(Currency::EUR));
+
+        return $amount->toRational()->multipliedBy($exactRate)->isGreaterThan($threshold);
     }
 
-    private function exchangeAsRational(Money $amount, Currency $to): RationalMoney
+    private function exchangeAsRational(Money $amount, Currency $to, string $exchangeRate): RationalMoney
     {
-        $fromCurrency = Currency::from($amount->getCurrency()->getCurrencyCode());
-        $exchangeRate = BigRational::of($this->getExchangeRate($fromCurrency))
-            ->dividedBy($this->getExchangeRate($to));
-        $rationalAmount = $amount->toRational()->multipliedBy($exchangeRate);
+        $rationalAmount = $amount->toRational()->multipliedBy(BigRational::of($exchangeRate));
 
         return new RationalMoney($rationalAmount->getAmount(), MoneyCurrency::of($to->value));
     }
