@@ -31,6 +31,8 @@ class SpreadService
         Currency $fromCurrency,
         Currency $toCurrency,
     ): Money {
+        // `price` is the already rounded gross transaction amount in the target currency.
+        // Keep the formula rational until one explicit HALF_UP rounding to its minor unit.
         if (!$price->getCurrency()->isEqualTo($toCurrency->value)) {
             throw new \InvalidArgumentException('Spread price currency must match destination currency.');
         }

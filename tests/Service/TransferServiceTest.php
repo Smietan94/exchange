@@ -64,6 +64,7 @@ class TransferServiceTest extends TestCase
             },
         );
         $this->transactionRepository->method('transition')->willReturn(true);
+        $this->transactionRepository->method('save')->willReturnCallback($this->assignTransactionId(...));
     }
 
     public function testTransferSuccessfully(): void
@@ -116,7 +117,8 @@ class TransferServiceTest extends TestCase
         $this->transactionRepository
             ->expects(self::once())
             ->method('save')
-            ->with($this->callback(static fn (Transaction $transaction): bool => TransactionStatus::PENDING === $transaction->getStatus()));
+            ->with($this->callback(static fn (Transaction $transaction): bool => TransactionStatus::PENDING === $transaction->getStatus()))
+            ->willReturnCallback($this->assignTransactionId(...));
         $this->transactionRepository->expects(self::once())
             ->method('transition')
             ->with($this->isInstanceOf(Transaction::class), TransactionStatus::PENDING, TransactionStatus::COMPLETED, null)
@@ -178,7 +180,8 @@ class TransferServiceTest extends TestCase
             },
         );
         $this->transactionRepository->expects(self::once())->method('save')->willReturnCallback(
-            function (): void {
+            function (Transaction $transaction): void {
+                $this->assignTransactionId($transaction);
                 $this->databaseState['transactionSaved'] = true;
             },
         );
@@ -218,7 +221,7 @@ class TransferServiceTest extends TestCase
 
     public function testExactlyFifteenThousandEuroDoesNotRequireFraudReview(): void
     {
-        $transaction = $this->transferUsingActualRates(Currency::EUR, Currency::USD, '15000.00');
+        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '63583.50');
 
         self::assertFalse($transaction->requiresAntiFraudCheck());
         self::assertSame(TransactionStatus::COMPLETED, $transaction->getStatus());
@@ -231,6 +234,26 @@ class TransferServiceTest extends TestCase
         self::assertTrue($transaction->requiresAntiFraudCheck());
         self::assertSame(TransactionStatus::FRAUD_REVIEW, $transaction->getStatus());
         self::assertTrue($transaction->getToAmount()->isLessThan(Money::of('15000.00', 'EUR')));
+    }
+
+    public function testRecordedRateReproducesRoundedGrossAndClientNetPlusCompanySpreadEqualsGross(): void
+    {
+        $transaction = $this->transferUsingActualRates(Currency::PLN, Currency::EUR, '100000.00');
+
+        self::assertSame('0.23591025973719597065', $transaction->getExchangeRate());
+        self::assertTrue(Money::of('23591.03', 'EUR')->isEqualTo($transaction->getToAmount()->plus($transaction->getSpread())));
+        self::assertTrue(Money::of('23433.76', 'EUR')->isEqualTo($transaction->getToAmount()));
+        self::assertTrue(Money::of('157.27', 'EUR')->isEqualTo($transaction->getSpread()));
+    }
+
+    public function testJpySettlementRoundsGrossAndSpreadToWholeYen(): void
+    {
+        $transaction = $this->transferUsingActualRates(Currency::EUR, Currency::JPY, '100.00');
+
+        self::assertSame('185.10480349344978165939', $transaction->getExchangeRate());
+        self::assertTrue(Money::of('18510', 'JPY')->isEqualTo($transaction->getToAmount()->plus($transaction->getSpread())));
+        self::assertTrue(Money::of('109', 'JPY')->isEqualTo($transaction->getSpread()));
+        self::assertTrue(Money::of('18401', 'JPY')->isEqualTo($transaction->getToAmount()));
     }
 
     public function testAmountBelowFifteenThousandEuroDoesNotRequireFraudReview(): void
@@ -301,6 +324,11 @@ class TransferServiceTest extends TestCase
         );
 
         return $service->transfer(1, 1, 2, $amount);
+    }
+
+    private function assignTransactionId(Transaction $transaction): void
+    {
+        (new \ReflectionProperty($transaction, 'id'))->setValue($transaction, 1);
     }
 
     public function testTransferThrowsWhenFromWalletNotFound(): void
