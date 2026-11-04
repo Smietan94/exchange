@@ -14,6 +14,7 @@ use App\Service\MoneyAmount;
 use App\Service\TransactionProcessorService;
 use Brick\Money\Money;
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\DBAL\Schema\Schema;
 use Psr\Log\NullLogger;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -45,6 +46,8 @@ final class TransactionProcessorDatabaseTest extends KernelTestCase
         }
 
         $this->createTemporaryTables();
+        $this->applyWalletArchiveMigration();
+        $this->applyActiveWalletUniqueMigration();
         $wallets = new WalletRepository($this->connection);
         $this->transactions = new TransactionRepository($this->connection);
         $this->processor = new TransactionProcessorService(
@@ -182,17 +185,170 @@ final class TransactionProcessorDatabaseTest extends KernelTestCase
         self::assertSame('175.0000', $this->connection->fetchOne('SELECT balance FROM wallets WHERE id = 1'));
     }
 
+    public function testOwnedEmptyWalletCanBeArchivedAndItsHistoryRemainsQueryable(): void
+    {
+        $this->insertWallet(1, 1, Currency::EUR, '0.0000');
+        $this->insertWallet(2, 1, Currency::PLN, '1.0000');
+        $this->insertTransaction(1, 1, 2, TransactionStatus::COMPLETED);
+        $wallets = new WalletRepository($this->connection);
+
+        $wallets->archiveOwnedWallet(1, 1);
+
+        self::assertNull($wallets->findById(1));
+        self::assertCount(1, $wallets->findByUserId(1));
+        self::assertNotNull($this->connection->fetchOne('SELECT deleted_at FROM wallets WHERE id = 1'));
+        self::assertSame(1, (int) $this->connection->fetchOne('SELECT COUNT(*) FROM transactions WHERE id = 1'));
+        self::assertCount(1, $this->transactions->findByWalletId(1));
+
+        self::assertFalse($wallets->depositBalance(1, Money::of('1.00', 'EUR')));
+        self::assertFalse($wallets->reserveBalance(1, Money::of('1.00', 'EUR')));
+        self::assertFalse($wallets->lockActiveWallets(1, 2));
+        try {
+            $wallets->addToBalance(1, Money::of('1.00', 'EUR'));
+            self::fail('Expected posting to an archived wallet to fail.');
+        } catch (\RuntimeException) {
+            self::assertSame('0.0000', $this->connection->fetchOne('SELECT balance FROM wallets WHERE id = 1'));
+        }
+    }
+
+    public function testArchivedWalletAllowsNewWalletOfSameCurrencyButDatabaseStillEnforcesOneActiveWallet(): void
+    {
+        $this->insertWallet(1, 1, Currency::EUR, '0.0000');
+        $wallets = new WalletRepository($this->connection);
+        $wallets->archiveOwnedWallet(1, 1);
+
+        self::assertNull($wallets->findByUserIdAndCurrency(1, Currency::EUR));
+        $service = new \App\Service\WalletService($wallets);
+        $newWallet = $service->createWallet(1, Currency::EUR);
+
+        self::assertNotNull($newWallet->getId());
+        self::assertNotSame(1, $newWallet->getId());
+        self::assertSame(1, (int) $this->connection->fetchOne(
+            'SELECT COUNT(*) FROM wallets WHERE user_id = 1 AND currency = :currency AND deleted_at IS NULL',
+            ['currency' => Currency::EUR->value],
+        ));
+        self::assertSame(1, (int) $this->connection->fetchOne('SELECT COUNT(*) FROM wallets WHERE id = 1 AND deleted_at IS NOT NULL'));
+
+        try {
+            $this->insertWallet(3, 1, Currency::EUR, '0.0000');
+            self::fail('Expected the database unique index to reject a second active wallet.');
+        } catch (UniqueConstraintViolationException) {
+            self::assertSame(1, (int) $this->connection->fetchOne(
+                'SELECT COUNT(*) FROM wallets WHERE user_id = 1 AND currency = :currency AND deleted_at IS NULL',
+                ['currency' => Currency::EUR->value],
+            ));
+        }
+    }
+
+    public function testWalletWithBalanceCannotBeArchived(): void
+    {
+        $this->insertWallet(1, 1, Currency::EUR, '0.0100');
+        $wallets = new WalletRepository($this->connection);
+
+        try {
+            $wallets->archiveOwnedWallet(1, 1);
+            self::fail('Expected a nonzero wallet balance to prevent archival.');
+        } catch (\App\Exception\WalletDeletionConflictException) {
+            self::assertNull($this->connection->fetchOne('SELECT deleted_at FROM wallets WHERE id = 1'));
+        }
+    }
+
+    public function testOtherUsersWalletCannotBeArchived(): void
+    {
+        $this->insertWallet(1, 2, Currency::EUR, '0.0000');
+        $wallets = new WalletRepository($this->connection);
+
+        try {
+            $wallets->archiveOwnedWallet(1, 1);
+            self::fail('Expected an ownership mismatch to look like a missing wallet.');
+        } catch (\App\Exception\WalletNotFoundException) {
+            self::assertNull($this->connection->fetchOne('SELECT deleted_at FROM wallets WHERE id = 1'));
+        }
+    }
+
+    public function testPendingAndFraudReviewTransactionsPreventArchival(): void
+    {
+        $this->insertWallet(1, 1, Currency::EUR, '0.0000');
+        $this->insertWallet(2, 1, Currency::PLN, '0.0000');
+        $wallets = new WalletRepository($this->connection);
+
+        foreach ([TransactionStatus::PENDING, TransactionStatus::FRAUD_REVIEW] as $index => $status) {
+            $transactionId = $index + 1;
+            $this->insertTransaction($transactionId, 1, 2, $status);
+
+            try {
+                $wallets->archiveOwnedWallet(1, 1);
+                self::fail(sprintf('Expected %s to prevent archival.', $status->value));
+            } catch (\App\Exception\WalletDeletionConflictException) {
+                self::assertNull($this->connection->fetchOne('SELECT deleted_at FROM wallets WHERE id = 1'));
+            }
+        }
+    }
+
+    private function applyWalletArchiveMigration(): void
+    {
+        require_once dirname(__DIR__, 2).'/migrations/Version20261104110000.php';
+        $migration = new \DoctrineMigrations\Version20261104110000($this->connection, new NullLogger());
+        $migration->up(new Schema());
+        foreach ($migration->getSql() as $query) {
+            $this->connection->executeStatement($query->getStatement(), $query->getParameters(), $query->getTypes());
+        }
+    }
+
+    private function applyActiveWalletUniqueMigration(): void
+    {
+        require_once dirname(__DIR__, 2).'/migrations/Version20261104120000.php';
+        $migration = new \DoctrineMigrations\Version20261104120000($this->connection, new NullLogger());
+        $migration->up(new Schema());
+        foreach ($migration->getSql() as $query) {
+            $this->connection->executeStatement($query->getStatement(), $query->getParameters(), $query->getTypes());
+        }
+    }
+
+    private function insertWallet(int $id, int $userId, Currency $currency, string $balance): void
+    {
+        $this->connection->insert('wallets', [
+            'id' => $id,
+            'user_id' => $userId,
+            'currency' => $currency->value,
+            'balance' => $balance,
+            'is_blocked' => 0,
+            'last_activity_at' => null,
+            'created_at' => '2026-01-01 00:00:00',
+        ]);
+    }
+
+    private function insertTransaction(int $id, int $fromWalletId, int $toWalletId, TransactionStatus $status): void
+    {
+        $this->connection->insert('transactions', [
+            'id' => $id,
+            'from_wallet_id' => $fromWalletId,
+            'to_wallet_id' => $toWalletId,
+            'from_amount' => '1.0000',
+            'to_amount' => '1.0000',
+            'from_currency' => Currency::EUR->value,
+            'to_currency' => Currency::PLN->value,
+            'spread' => '0.0100',
+            'exchange_rate' => '1.000000',
+            'status' => $status->value,
+            'requires_anti_fraud_check' => (int) (TransactionStatus::FRAUD_REVIEW === $status),
+            'anti_fraud_checked_at' => null,
+            'created_at' => '2026-01-01 00:00:00',
+        ]);
+    }
+
     private function createTemporaryTables(): void
     {
         $this->connection->executeStatement(<<<'SQL'
             CREATE TEMPORARY TABLE wallets (
-                id INT NOT NULL PRIMARY KEY,
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
                 currency VARCHAR(3) NOT NULL,
                 balance DECIMAL(20,4) NOT NULL,
                 is_blocked TINYINT(1) NOT NULL DEFAULT 0,
                 last_activity_at DATETIME NULL,
-                created_at DATETIME NOT NULL
+                created_at DATETIME NOT NULL,
+                UNIQUE KEY wallet_user_currency_unique (user_id, currency)
             ) ENGINE=InnoDB
             SQL);
         $this->connection->executeStatement(<<<'SQL'

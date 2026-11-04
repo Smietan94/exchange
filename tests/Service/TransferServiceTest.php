@@ -32,6 +32,7 @@ class TransferServiceTest extends TestCase
     private CompanyWalletRepositoryInterface $companyWalletRepository;
     private TransferService $transferService;
     private array $databaseState = [];
+    private bool $lockWallets = true;
 
     protected function setUp(): void
     {
@@ -65,6 +66,7 @@ class TransferServiceTest extends TestCase
         );
         $this->transactionRepository->method('transition')->willReturn(true);
         $this->transactionRepository->method('save')->willReturnCallback($this->assignTransactionId(...));
+        $this->walletRepository->method('lockActiveWallets')->willReturnCallback(fn (): bool => $this->lockWallets);
     }
 
     public function testTransferSuccessfully(): void
@@ -141,6 +143,24 @@ class TransferServiceTest extends TestCase
         $this->walletRepository->expects(self::never())->method('findById');
         $this->expectException(InvalidArgumentException::class);
         $this->transferService->transfer(1, 1, 1, '1.00');
+    }
+
+    public function testTransferRejectsWalletArchivedAfterInitialLookup(): void
+    {
+        $from = Wallet::create(1, Currency::PLN);
+        $from->setBalance(Money::of('100.00', 'PLN'));
+        $to = Wallet::create(1, Currency::EUR);
+        $this->walletRepository->expects(self::exactly(3))->method('findById')
+            ->willReturnOnConsecutiveCalls($from, $to, null);
+        $this->lockWallets = false;
+        $this->walletRepository->expects(self::never())->method('reserveBalance');
+        $this->transactionRepository->expects(self::never())->method('save');
+        $this->exchangeRateService->method('getExchangeRateBetween')->willReturn('0.250000');
+        $this->exchangeRateService->method('exchange')->willReturn(Money::of('2.50', 'EUR'));
+        $this->spreadService->method('calculateSpread')->willReturn(Money::of('0.01', 'EUR'));
+
+        $this->expectException(WalletNotFoundException::class);
+        $this->transferService->transfer(1, 1, 2, '10.00');
     }
 
     public function testTransferRejectsInsufficientBalance(): void
