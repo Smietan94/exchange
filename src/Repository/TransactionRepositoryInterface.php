@@ -6,12 +6,18 @@ namespace App\Repository;
 
 use App\Entity\Transaction;
 use App\Enum\TransactionStatus;
+use DateTimeImmutable;
 
 interface TransactionRepositoryInterface
 {
     public function transactional(callable $operation): mixed;
 
-    public function transition(Transaction $transaction, TransactionStatus $status): bool;
+    public function transition(
+        Transaction $transaction,
+        TransactionStatus $expectedStatus,
+        TransactionStatus $status,
+        ?DateTimeImmutable $antiFraudCheckedAt = null,
+    ): bool;
 
     public function findById(int $id): ?Transaction;
 
