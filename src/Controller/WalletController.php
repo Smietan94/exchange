@@ -10,6 +10,7 @@ use App\Entity\User;
 use App\Enum\Currency;
 use App\Exception\WalletAlreadyExistsException;
 use App\Exception\WalletBlockedException;
+use App\Exception\WalletDeletionConflictException;
 use App\Exception\WalletNotFoundException;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\DepositService;
@@ -44,6 +45,20 @@ final class WalletController extends AbstractController
         $wallets = $this->walletRepository->findByUserId($user->getIdNotNull());
 
         return new JsonResponse(array_map(static fn ($w) => new WalletResponse($w), $wallets));
+    }
+
+    #[Route('/{id}', requirements: ['id' => '\\d+'], methods: ['DELETE'])]
+    public function delete(int $id, #[CurrentUser] User $user): Response
+    {
+        try {
+            $this->walletService->deleteWallet($user->getIdNotNull(), $id);
+        } catch (WalletNotFoundException $exception) {
+            return new JsonResponse(['error' => $exception->getMessage()], Response::HTTP_NOT_FOUND);
+        } catch (WalletDeletionConflictException $exception) {
+            return new JsonResponse(['error' => $exception->getMessage()], Response::HTTP_CONFLICT);
+        }
+
+        return new Response(status: Response::HTTP_NO_CONTENT);
     }
 
     /**

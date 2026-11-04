@@ -69,6 +69,40 @@ class WalletControllerTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
     }
 
+    public function testDeleteArchivesOwnWalletAndReturnsNoContent(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->walletService->expects(self::once())->method('deleteWallet')->with(1, 7);
+
+        $response = $this->controller->delete(7, $user);
+
+        self::assertSame(204, $response->getStatusCode());
+        self::assertSame('', $response->getContent());
+    }
+
+    public function testDeleteReturnsNotFoundForMissingOrOtherUsersWallet(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->walletService->expects(self::once())->method('deleteWallet')
+            ->willThrowException(new WalletNotFoundException(7));
+
+        $response = $this->controller->delete(7, $user);
+
+        self::assertSame(404, $response->getStatusCode());
+        self::assertSame(['error' => 'Wallet 7 not found.'], json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR));
+    }
+
+    public function testDeleteReturnsConflictWhenWalletCannotBeArchived(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->walletService->expects(self::once())->method('deleteWallet')
+            ->willThrowException(new \App\Exception\WalletDeletionConflictException());
+
+        $response = $this->controller->delete(7, $user);
+
+        self::assertSame(409, $response->getStatusCode());
+    }
+
     /**
      * @throws Throwable
      */

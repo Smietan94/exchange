@@ -29,4 +29,9 @@ readonly class WalletService
 
         return $wallet;
     }
+
+    public function deleteWallet(int $userId, int $walletId): void
+    {
+        $this->walletRepository->archiveOwnedWallet($walletId, $userId);
+    }
 }
