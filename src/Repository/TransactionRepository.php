@@ -21,6 +21,39 @@ readonly class TransactionRepository implements TransactionRepositoryInterface
     {
     }
 
+    public function transactional(callable $operation): mixed
+    {
+        return $this->connection->transactional($operation);
+    }
+
+    public function transition(Transaction $transaction, TransactionStatus $status): bool
+    {
+        $now = $transaction->requiresAntiFraudCheck()
+            ? (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s')
+            : null;
+        $affected = $this->connection->executeStatement(
+            'UPDATE transactions SET status = :status, anti_fraud_checked_at = :checked_at WHERE id = :id AND status IN (:pending, :fraud_review)',
+            [
+                'status' => $status->value,
+                'checked_at' => $now,
+                'id' => $transaction->getId(),
+                'pending' => TransactionStatus::PENDING->value,
+                'fraud_review' => TransactionStatus::FRAUD_REVIEW->value,
+            ],
+        );
+
+        if (1 !== $affected) {
+            return false;
+        }
+
+        $transaction->setStatus($status);
+        if ($transaction->requiresAntiFraudCheck()) {
+            $transaction->setAntiFraudCheckedAt(new DateTimeImmutable());
+        }
+
+        return true;
+    }
+
     /**
      * @throws Exception
      */

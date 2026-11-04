@@ -65,38 +65,17 @@ readonly class CompanyWalletRepository implements CompanyWalletRepositoryInterfa
     public function addToBalance(Currency $currency, string $amount): void
     {
         $now = new DateTimeImmutable()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
-        $existing = $this->findByCurrency($currency);
-
-        $qb = $this->connection->createQueryBuilder();
-        if (null === $existing) {
-            $qb
-                ->insert(self::TABLE_NAME)
-                ->values([
-                    'currency' => ':currency',
-                    'balance' => ':balance',
-                    'created_at' => ':created_at',
-                    'updated_at' => ':updated_at',
-                ]);
-
-            $this->connection->executeStatement($qb->getSQL(), [
+        $this->connection->executeStatement(
+            'INSERT INTO company_wallets (currency, balance, created_at, updated_at) VALUES (:currency, :amount, :created_at, :updated_at) ON DUPLICATE KEY UPDATE balance = company_wallets.balance + :increment, updated_at = :updated_at_existing',
+            [
                 'currency' => $currency->value,
-                'balance' => $amount,
+                'amount' => $amount,
+                'increment' => $amount,
                 'created_at' => $now,
                 'updated_at' => $now,
-            ]);
-        } else {
-            $qb
-                ->update(self::TABLE_NAME)
-                ->set('balance', 'balance + :amount')
-                ->set('updated_at', ':updated_at')
-                ->where('currency = :currency');
-
-            $this->connection->executeStatement($qb->getSQL(), [
-                'amount' => $amount,
-                'updated_at' => $now,
-                'currency' => $currency->value,
-            ]);
-        }
+                'updated_at_existing' => $now,
+            ],
+        );
     }
 
     private function buildEntity(array $row): CompanyWallet

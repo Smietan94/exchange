@@ -97,6 +97,23 @@ readonly class WalletRepository implements WalletRepositoryInterface
         }
     }
 
+    public function reserveBalance(int $walletId, string $amount): bool
+    {
+        return 1 === $this->connection->executeStatement(
+            'UPDATE wallets SET balance = balance - :amount WHERE id = :id AND balance >= :amount',
+            ['amount' => $amount, 'id' => $walletId],
+        );
+    }
+
+    public function addToBalance(int $walletId, string $amount): void
+    {
+        $now = (new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+        $this->connection->executeStatement(
+            'UPDATE wallets SET balance = balance + :amount, last_activity_at = :now WHERE id = :id',
+            ['amount' => $amount, 'now' => $now, 'id' => $walletId],
+        );
+    }
+
     private function buildEntity(array $row): Wallet
     {
         return new Wallet(

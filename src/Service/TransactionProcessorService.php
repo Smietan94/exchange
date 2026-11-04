@@ -6,55 +6,55 @@ namespace App\Service;
 
 use App\Entity\Transaction;
 use App\Enum\TransactionStatus;
+use App\Repository\CompanyWalletRepositoryInterface;
 use App\Repository\TransactionRepositoryInterface;
 use App\Repository\WalletRepositoryInterface;
-use DateTimeImmutable;
 
 final readonly class TransactionProcessorService
 {
     public function __construct(
         private WalletRepositoryInterface $walletRepository,
         private TransactionRepositoryInterface $transactionRepository,
+        private CompanyWalletRepositoryInterface $companyWalletRepository,
     ) {
     }
 
     public function complete(Transaction $transaction): void
     {
-        $fromWallet = $this->walletRepository->findById($transaction->getFromWalletId());
-        $toWallet = $this->walletRepository->findById($transaction->getToWalletId());
+        $this->transactionRepository->transactional(function () use ($transaction): void {
+            $fromWallet = $this->walletRepository->findById($transaction->getFromWalletId());
+            $toWallet = $this->walletRepository->findById($transaction->getToWalletId());
 
-        if (null === $fromWallet || null === $toWallet) {
-            $this->reject($transaction);
+            if (null === $fromWallet || null === $toWallet) {
+                $this->rejectWithinTransaction($transaction, null !== $fromWallet);
 
-            return;
-        }
+                return;
+            }
 
-        $fromWallet->setBalance($fromWallet->getBalance() - (float) $transaction->getFromAmount());
-        $fromWallet->setLastActivityAt(new DateTimeImmutable());
+            if (!$this->transactionRepository->transition($transaction, TransactionStatus::COMPLETED)) {
+                return;
+            }
 
-        $toWallet->setBalance($toWallet->getBalance() + (float) $transaction->getToAmount());
-        $toWallet->setLastActivityAt(new DateTimeImmutable());
-
-        $this->walletRepository->save($fromWallet);
-        $this->walletRepository->save($toWallet);
-
-        $transaction->setStatus(TransactionStatus::COMPLETED);
-
-        if ($transaction->requiresAntiFraudCheck()) {
-            $transaction->setAntiFraudCheckedAt(new DateTimeImmutable());
-        }
-
-        $this->transactionRepository->save($transaction);
+            $this->walletRepository->addToBalance($transaction->getToWalletId(), $transaction->getToAmount());
+            $this->companyWalletRepository->addToBalance($transaction->getToCurrency(), $transaction->getSpread());
+        });
     }
 
     public function reject(Transaction $transaction): void
     {
-        $transaction->setStatus(TransactionStatus::REJECTED);
+        $this->transactionRepository->transactional(function () use ($transaction): void {
+            $this->rejectWithinTransaction($transaction, true);
+        });
+    }
 
-        if ($transaction->requiresAntiFraudCheck()) {
-            $transaction->setAntiFraudCheckedAt(new DateTimeImmutable());
+    private function rejectWithinTransaction(Transaction $transaction, bool $returnFunds): void
+    {
+        if (!$this->transactionRepository->transition($transaction, TransactionStatus::REJECTED)) {
+            return;
         }
 
-        $this->transactionRepository->save($transaction);
+        if ($returnFunds) {
+            $this->walletRepository->addToBalance($transaction->getFromWalletId(), $transaction->getFromAmount());
+        }
     }
 }

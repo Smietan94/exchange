@@ -9,6 +9,10 @@ use App\Enum\TransactionStatus;
 
 interface TransactionRepositoryInterface
 {
+    public function transactional(callable $operation): mixed;
+
+    public function transition(Transaction $transaction, TransactionStatus $status): bool;
+
     public function findById(int $id): ?Transaction;
 
     /** @return Transaction[] */
