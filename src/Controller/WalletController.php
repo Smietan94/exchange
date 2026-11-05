@@ -61,16 +61,19 @@ final class WalletController extends AbstractController
         return new Response(status: Response::HTTP_NO_CONTENT);
     }
 
-    /**
-     * @throws JsonException
-     */
     #[Route('', methods: ['POST'])]
     public function create(Request $request, #[CurrentUser] User $user): JsonResponse
     {
-        $data = json_decode($request->getContent(), true, 512, JSON_THROW_ON_ERROR) ?? [];
+        $data = $this->decodeJsonObject($request);
+        if ($data instanceof JsonResponse) {
+            return $data;
+        }
 
         if (!isset($data['currency'])) {
             return new JsonResponse(['error' => 'Missing required field: currency.'], Response::HTTP_BAD_REQUEST);
+        }
+        if (!is_string($data['currency'])) {
+            return new JsonResponse(['error' => 'Invalid currency.'], Response::HTTP_BAD_REQUEST);
         }
 
         try {
@@ -88,18 +91,24 @@ final class WalletController extends AbstractController
         return new JsonResponse(new WalletResponse($wallet), Response::HTTP_CREATED);
     }
 
-    /**
-     * @throws JsonException
-     */
     #[Route('/transfer', methods: ['POST'])]
     public function transfer(Request $request, #[CurrentUser] User $user): JsonResponse
     {
-        $data = json_decode($request->getContent(), true, 512, JSON_THROW_ON_ERROR) ?? [];
+        $data = $this->decodeJsonObject($request);
+        if ($data instanceof JsonResponse) {
+            return $data;
+        }
 
         foreach (['fromWalletId', 'toWalletId', 'amount'] as $field) {
             if (!isset($data[$field])) {
                 return new JsonResponse(['error' => sprintf('Missing required field: %s.', $field)], Response::HTTP_BAD_REQUEST);
             }
+        }
+
+        if (!is_int($data['fromWalletId']) || $data['fromWalletId'] <= 0
+            || !is_int($data['toWalletId']) || $data['toWalletId'] <= 0
+        ) {
+            return new JsonResponse(['error' => 'Wallet IDs must be positive integers.'], Response::HTTP_BAD_REQUEST);
         }
 
         $amount = TransferService::normalizeAmount($data['amount']);
@@ -110,8 +119,8 @@ final class WalletController extends AbstractController
         try {
             $transaction = $this->transferService->transfer(
                 $user->getIdNotNull(),
-                (int) $data['fromWalletId'],
-                (int) $data['toWalletId'],
+                $data['fromWalletId'],
+                $data['toWalletId'],
                 $amount,
             );
         } catch (WalletNotFoundException $e) {
@@ -123,13 +132,13 @@ final class WalletController extends AbstractController
         return new JsonResponse(new TransactionResponse($transaction), Response::HTTP_CREATED);
     }
 
-    /**
-     * @throws JsonException
-     */
     #[Route('/{id}/deposit', methods: ['POST'])]
     public function deposit(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
     {
-        $data = json_decode($request->getContent(), true, 512, JSON_THROW_ON_ERROR) ?? [];
+        $data = $this->decodeJsonObject($request);
+        if ($data instanceof JsonResponse) {
+            return $data;
+        }
 
         if (!isset($data['amount'])) {
             return new JsonResponse(['error' => 'Missing required field: amount.'], Response::HTTP_BAD_REQUEST);
@@ -159,5 +168,21 @@ final class WalletController extends AbstractController
         }
 
         return new JsonResponse(new WalletResponse($wallet));
+    }
+
+    /** @return array<string, mixed>|JsonResponse */
+    private function decodeJsonObject(Request $request): array|JsonResponse
+    {
+        try {
+            $data = json_decode($request->getContent(), false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return new JsonResponse(['error' => 'Malformed JSON.'], Response::HTTP_BAD_REQUEST);
+        }
+
+        if (!$data instanceof \stdClass) {
+            return new JsonResponse(['error' => 'Request body must be a JSON object.'], Response::HTTP_BAD_REQUEST);
+        }
+
+        return get_object_vars($data);
     }
 }

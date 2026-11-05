@@ -8,6 +8,7 @@ use App\Entity\Wallet;
 use App\Enum\Currency;
 use App\Exception\WalletAlreadyExistsException;
 use App\Repository\WalletRepositoryInterface;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 
 readonly class WalletService
 {
@@ -25,7 +26,17 @@ readonly class WalletService
         }
 
         $wallet = Wallet::create($userId, $currency);
-        $this->walletRepository->save($wallet);
+        try {
+            $this->walletRepository->save($wallet);
+        } catch (UniqueConstraintViolationException $exception) {
+            // The pre-check can race with another create request. Translate only
+            // a unique violation that left this user's active currency wallet in place.
+            if (null === $this->walletRepository->findByUserIdAndCurrency($userId, $currency)) {
+                throw $exception;
+            }
+
+            throw new WalletAlreadyExistsException($userId, $currency);
+        }
 
         return $wallet;
     }

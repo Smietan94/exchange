@@ -155,6 +155,53 @@ class WalletControllerTest extends TestCase
         self::assertSame('Invalid currency.', $data['error']);
     }
 
+    #[DataProvider('invalidCurrencyTypesProvider')]
+    public function testCreateReturnsBadRequestWhenCurrencyIsNotAString(mixed $currency): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->walletService->expects(self::never())->method('createWallet');
+
+        $request = new Request(content: json_encode(['currency' => $currency], JSON_THROW_ON_ERROR));
+        $response = $this->controller->create($request, $user);
+
+        self::assertSame(400, $response->getStatusCode());
+        self::assertSame('Invalid currency.', json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR)['error']);
+    }
+
+    public static function invalidCurrencyTypesProvider(): array
+    {
+        return [
+            'integer' => [123],
+            'boolean' => [true],
+            'array' => [['PLN']],
+            'object' => [(object) ['value' => 'PLN']],
+        ];
+    }
+
+    public function testMalformedJsonReturnsBadRequestForEveryWriteEndpoint(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->walletService->expects(self::never())->method('createWallet');
+        $this->transferService->expects(self::never())->method('transfer');
+        $this->depositService->expects(self::never())->method('deposit');
+        $request = new Request(content: '{');
+
+        self::assertSame(400, $this->controller->create($request, $user)->getStatusCode());
+        self::assertSame(400, $this->controller->transfer($request, $user)->getStatusCode());
+        self::assertSame(400, $this->controller->deposit(5, $request, $user)->getStatusCode());
+    }
+
+    public function testTransferRequiresJsonObjectBody(): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->transferService->expects(self::never())->method('transfer');
+
+        foreach ([[], null, 'transfer', 123, true] as $body) {
+            $request = new Request(content: json_encode($body, JSON_THROW_ON_ERROR));
+            self::assertSame(400, $this->controller->transfer($request, $user)->getStatusCode());
+        }
+    }
+
     /**
      * @throws Throwable
      */
@@ -324,6 +371,35 @@ class WalletControllerTest extends TestCase
             'outside database range' => ['100000000000.0000'],
             'array' => [['100.00']],
             'boolean' => [true],
+        ];
+    }
+
+    #[DataProvider('invalidWalletIdsProvider')]
+    public function testTransferReturnsBadRequestForInvalidWalletIdTypesOrValues(mixed $fromWalletId, mixed $toWalletId): void
+    {
+        $user = new User(1, 'test@example.com', ['ROLE_USER'], new DateTimeImmutable());
+        $this->transferService->expects(self::never())->method('transfer');
+
+        $request = new Request(content: json_encode([
+            'fromWalletId' => $fromWalletId,
+            'toWalletId' => $toWalletId,
+            'amount' => '1.00',
+        ], JSON_THROW_ON_ERROR));
+
+        self::assertSame(400, $this->controller->transfer($request, $user)->getStatusCode());
+    }
+
+    public static function invalidWalletIdsProvider(): array
+    {
+        return [
+            'fractional source' => [1.5, 2],
+            'fractional destination' => [1, 2.5],
+            'numeric string source' => ['1', 2],
+            'numeric string destination' => [1, '2'],
+            'boolean source' => [true, 2],
+            'array destination' => [1, [2]],
+            'zero source' => [0, 2],
+            'negative destination' => [1, -2],
         ];
     }
 
