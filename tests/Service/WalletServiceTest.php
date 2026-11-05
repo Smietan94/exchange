@@ -10,6 +10,8 @@ use App\Exception\WalletAlreadyExistsException;
 use App\Repository\WalletRepositoryInterface;
 use App\Service\WalletService;
 use Brick\Money\Money;
+use Doctrine\DBAL\Driver;
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 
@@ -70,5 +72,55 @@ class WalletServiceTest extends TestCase
         $this->expectExceptionMessage('Wallet for user 1 in currency PLN already exists.');
 
         $this->walletService->createWallet($userId, $currency);
+    }
+
+    public function testCreateWalletMapsRacingUniqueViolationWhenTheWalletNowExists(): void
+    {
+        $userId = 1;
+        $currency = Currency::EUR;
+        $existingWallet = Wallet::create($userId, $currency);
+
+        $this->walletRepository->expects(self::exactly(2))
+            ->method('findByUserIdAndCurrency')
+            ->with($userId, $currency)
+            ->willReturnOnConsecutiveCalls(null, $existingWallet);
+        $this->walletRepository->expects(self::once())
+            ->method('save')
+            ->willThrowException($this->uniqueConstraintViolation());
+
+        $this->expectException(WalletAlreadyExistsException::class);
+        $this->expectExceptionMessage('Wallet for user 1 in currency EUR already exists.');
+
+        $this->walletService->createWallet($userId, $currency);
+    }
+
+    public function testCreateWalletRethrowsUnrelatedUniqueViolation(): void
+    {
+        $userId = 1;
+        $currency = Currency::EUR;
+
+        $this->walletRepository->expects(self::exactly(2))
+            ->method('findByUserIdAndCurrency')
+            ->with($userId, $currency)
+            ->willReturn(null);
+        $this->walletRepository->expects(self::once())
+            ->method('save')
+            ->willThrowException($this->uniqueConstraintViolation());
+
+        $this->expectException(UniqueConstraintViolationException::class);
+
+        $this->walletService->createWallet($userId, $currency);
+    }
+
+    private function uniqueConstraintViolation(): UniqueConstraintViolationException
+    {
+        $driverException = new class('Duplicate key') extends \RuntimeException implements Driver\Exception {
+            public function getSQLState(): ?string
+            {
+                return '23000';
+            }
+        };
+
+        return new UniqueConstraintViolationException($driverException, null);
     }
 }
